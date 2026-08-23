@@ -33,8 +33,7 @@ A personal, offline-first PWA that turns a planned road-trip spreadsheet into a 
 schedule engine: what's next, when to leave, how far behind we are, and whether we're
 about to miss something we've paid for.
 
-**Status:** planning. No code yet. Target trip: Canada + US, 27 Sep – 20 Oct 2026
-(Day 0 – Day 23, ~276 stops).
+**Status:** planning. No code yet. (Day 0 – Day 23, ~276 stops).
 
 ---
 
