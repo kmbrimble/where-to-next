@@ -1,0 +1,16 @@
+name = "where-to-next-api"
+main = "worker/index.ts"
+compatibility_date = "2026-08-30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "where-to-next"
+database_id = "274df483-6d18-4ab1-8ad0-20fdaf0281e2"
+
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "where-to-next-docs"
+
+[[r2_buckets]]
+binding = "TILES"
+bucket_name = "where-to-next-tiles"
