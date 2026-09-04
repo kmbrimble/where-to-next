@@ -7,6 +7,8 @@ import csv
 import io
 import json
 
+import pytest
+
 from etl.__main__ import main
 from etl.loaders import CsvLoader
 from etl.parse import parse_rows
@@ -412,3 +414,70 @@ def test_invalid_kind_or_timing_value_still_errors(tmp_path):
 
     assert result.trip is None
     assert any("kind" in e and "bogus" in e for e in result.errors)
+
+
+@pytest.mark.parametrize("row_type", ["leg", "drive_total", "day_end", "blank"])
+def test_plan_on_structural_row_is_a_misclassification_warning(tmp_path, row_type):
+    rows = happy_path_rows()
+    rows.append(r(row_type=row_type, Plan="Stray stop title"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert result.errors == []
+    assert any(
+        f"row_type={row_type} but Plan is non-empty" in w and "Stray stop title" in w
+        for w in result.warnings
+    )
+
+
+def test_plan_on_stop_or_lodging_row_does_not_warn(tmp_path):
+    # sanity check: the misclassification warning is scoped to structural row types
+    # only — stop/lodging/day_header legitimately carry Plan content.
+    rows = happy_path_rows()
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert not any("possible misclassification" in w for w in result.warnings)
+
+
+@pytest.mark.parametrize("row_type", ["leg", "drive_total"])
+def test_fixed_time_on_leg_or_drive_total_is_a_misclassification_warning(tmp_path, row_type):
+    rows = happy_path_rows()
+    rows.append(r(row_type=row_type, fixed_time="16:30"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert any(
+        f"row_type={row_type} but fixed_time is non-empty" in w and "16:30" in w
+        for w in result.warnings
+    )
+
+
+@pytest.mark.parametrize("row_type", ["leg", "drive_total"])
+def test_timing_on_leg_or_drive_total_is_a_misclassification_warning(tmp_path, row_type):
+    rows = happy_path_rows()
+    rows.append(r(row_type=row_type, timing="fixed"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert any(
+        f"row_type={row_type} but timing is non-empty" in w and "fixed" in w
+        for w in result.warnings
+    )
+
+
+def test_fixed_time_and_timing_on_day_end_or_blank_are_not_flagged(tmp_path):
+    # day_end/blank only get the Plan check per the task's explicit scope — they don't
+    # have a "leg" concept, so fixed_time/timing content there isn't misclassification
+    # in the same sense.
+    rows = happy_path_rows()
+    rows.append(r(row_type="day_end", fixed_time="16:30", timing="fixed", Location="Vancouver"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert not any("fixed_time is non-empty" in w for w in result.warnings)
+    assert not any("timing is non-empty" in w for w in result.warnings)

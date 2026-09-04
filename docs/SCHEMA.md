@@ -430,6 +430,10 @@ loud failure is the point.
   on a day having a constraint doesn't exist yet either. Revert to an error once both
   of those land.
 - A document whose date matches no day
+- A `leg`, `drive_total`, `day_end` or `blank` row with non-empty `Plan` — these
+  row types are structural and shouldn't carry a stop title, so content there
+  usually means `row_type` was mistyped. A `leg` or `drive_total` row with a
+  non-empty `fixed_time` or `timing` gets the same warning, for the same reason.
 - `address_source = geocoded` — flags every stop whose pin was inferred rather than given
 - A geocode returning `APPROXIMATE` or `GEOMETRIC_CENTER` precision
 
