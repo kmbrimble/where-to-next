@@ -24,6 +24,7 @@ jobs:
         run: python -m etl --sheet-id "$GOOGLE_SHEET_ID" --out-dir etl-out
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: etl-output
           path: |

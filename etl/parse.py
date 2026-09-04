@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -29,8 +30,8 @@ HOWS = {"drive", "walk", "taxi", "shuttle", "plane"}
 
 DURATION_RE = re.compile(r"^\d{1,2}:\d{2}$")
 DAY_RE = re.compile(r"day\s*(\d+)", re.IGNORECASE)
-DATE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-DATE_DMY_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+TIME_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
+DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y")
 
 
 def normalize_header(h: str) -> str:
@@ -60,9 +61,27 @@ def valid_timezone(name: str) -> bool:
         return False
 
 
-def valid_date(value: str) -> bool:
+def parse_date(value: str) -> str | None:
+    """Parse ISO (YYYY-MM-DD) or AU-locale (D/M/YYYY), return ISO or None."""
     v = value.strip()
-    return bool(DATE_ISO_RE.match(v) or DATE_DMY_RE.match(v))
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(v, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_time(value: str) -> str | None:
+    """Parse H:MM or H:MM:SS wall-clock, return zero-padded HH:MM or None."""
+    v = value.strip()
+    if not TIME_RE.match(v):
+        return None
+    parts = v.split(":")
+    h, m = int(parts[0]), int(parts[1])
+    if h > 23 or m > 59:
+        return None
+    return f"{h:02d}:{m:02d}"
 
 
 @dataclass
@@ -174,23 +193,32 @@ def parse_rows(source: RowSource) -> ParseResult:
                 continue
             day_num = int(m.group(1))
 
-            date_val = cell(row, "date")
-            if not date_val:
+            date_raw = cell(row, "date")
+            date_val = None
+            if not date_raw:
                 errors.append(f"Row {row_num}, column 'Date': day_header missing Date")
-            elif not valid_date(date_val):
-                errors.append(
-                    f"Row {row_num}, column 'Date': {date_val!r} is not a valid date "
-                    "(expected YYYY-MM-DD or D/M/YYYY)"
-                )
+            else:
+                date_val = parse_date(date_raw)
+                if date_val is None:
+                    errors.append(
+                        f"Row {row_num}, column 'Date': {date_raw!r} is not a valid date "
+                        "(expected YYYY-MM-DD or D/M/YYYY)"
+                    )
 
             zone = cell(row, "zone")
             if zone and not valid_timezone(zone):
                 errors.append(f"Row {row_num}, column 'Zone': {zone!r} is not a valid IANA timezone")
 
-            anchor = cell(row, "fixed_time")
+            anchor_raw = cell(row, "fixed_time")
+            anchor = None
+            if anchor_raw:
+                anchor = parse_time(anchor_raw)
+                if anchor is None:
+                    errors.append(f"Row {row_num}, column 'fixed_time': {anchor_raw!r} is not a valid HH:MM time")
+
             current_day = {
                 "day": day_num,
-                "date": date_val,
+                "date": date_val or "",
                 "leg": None,
                 "start_location": cell(row, "location") or None,
                 "end_location": None,
@@ -204,6 +232,10 @@ def parse_rows(source: RowSource) -> ParseResult:
         if current_day is None:
             errors.append(f"Row {row_num}: {row_type} row appears before any day_header")
             continue
+
+        stray_date = cell(row, "date")
+        if stray_date:
+            warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
 
         if row_type == "leg":
             current_day["leg"] = cell(row, "location") or None
@@ -224,10 +256,17 @@ def parse_rows(source: RowSource) -> ParseResult:
             name = cell(row, "plan")
             if not name:
                 errors.append(f"Row {row_num}, column 'Plan': lodging row missing hotel name")
-            check_in = cell(row, "fixed_time")
+            check_in_raw = cell(row, "fixed_time")
+            check_in = None
+            if check_in_raw:
+                check_in = parse_time(check_in_raw)
+                if check_in is None:
+                    errors.append(
+                        f"Row {row_num}, column 'fixed_time': {check_in_raw!r} is not a valid HH:MM time"
+                    )
             current_day["lodging"] = Lodging(
                 name=name or "",
-                check_in=check_in or None,
+                check_in=check_in,
                 notes=cell(row, "notes") or None,
             )
             continue
@@ -284,13 +323,22 @@ def parse_rows(source: RowSource) -> ParseResult:
             missing_fields.append("Zone")
 
         how_raw = cell(row, "how")
-        how = how_raw.lower()
-        if how and how not in HOWS:
+        how: str | None = how_raw.lower()
+        if not how:
+            warnings.append(f"Row {row_num}: How is blank — no deep link mode for this stop")
+            how = None
+        elif how not in HOWS:
             errors.append(f"Row {row_num}, column 'How': {how_raw!r} not in {sorted(HOWS)}")
-            how = ""
+            how = None
 
-        fixed_time = cell(row, "fixed_time")
-        if timing == "fixed" and not fixed_time:
+        fixed_time_raw = cell(row, "fixed_time")
+        fixed_time = None
+        if fixed_time_raw:
+            fixed_time = parse_time(fixed_time_raw)
+            if fixed_time is None:
+                errors.append(f"Row {row_num}, column 'fixed_time': {fixed_time_raw!r} is not a valid HH:MM time")
+                missing_fields.append("fixed_time")
+        if timing == "fixed" and not fixed_time_raw:
             missing_fields.append("fixed_time (required when timing=fixed)")
 
         if missing_fields:
@@ -334,7 +382,7 @@ def parse_rows(source: RowSource) -> ParseResult:
                 travel_minutes=travel_minutes,
                 dwell_minutes=dwell_minutes,
                 timing=timing,
-                fixed_time=fixed_time or None,
+                fixed_time=fixed_time,
                 arrive_before=arrive_before,
                 daylight_required=parse_bool(cell(row, "daylight_required")),
                 notes=cell(row, "notes") or None,

@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--csv", type=Path, help="Path to a local CSV export of the Itinerary sheet")
     source_group.add_argument("--sheet-id", help="Google Sheet ID (reads GOOGLE_SHEETS_SA_KEY from env)")
-    parser.add_argument("--out-dir", type=Path, default=Path("."), help="Where to write trip.json and report.md")
+    parser.add_argument("--out-dir", type=Path, default=Path("etl"), help="Where to write trip.json and report.md")
     args = parser.parse_args(argv)
 
     if args.csv:

@@ -43,7 +43,7 @@ class Stop(BaseModel):
     address_source: str | None = None
     timezone: str
     day_offset: int = 0
-    how: str
+    how: str | None = None
     travel_minutes: int
     dwell_minutes: int
     timing: str

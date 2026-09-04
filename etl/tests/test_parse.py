@@ -7,6 +7,7 @@ import csv
 import io
 import json
 
+from etl.__main__ import main
 from etl.loaders import CsvLoader
 from etl.parse import parse_rows
 from etl.report import render_report
@@ -235,12 +236,48 @@ def test_report_renders_counts_errors_and_warnings(tmp_path):
 
 def test_deterministic_output_same_bytes_twice(tmp_path):
     path = write_csv(tmp_path, happy_path_rows())
-    source = CsvLoader(path)
+    out_a, out_b = tmp_path / "a", tmp_path / "b"
 
-    result_a = parse_rows(source)
-    result_b = parse_rows(source)
+    assert main(["--csv", str(path), "--out-dir", str(out_a)]) == 0
+    assert main(["--csv", str(path), "--out-dir", str(out_b)]) == 0
 
-    json_a = json.dumps(result_a.trip.model_dump(mode="json", by_alias=True), sort_keys=True)
-    json_b = json.dumps(result_b.trip.model_dump(mode="json", by_alias=True), sort_keys=True)
+    assert (out_a / "trip.json").read_bytes() == (out_b / "trip.json").read_bytes()
 
-    assert json_a == json_b
+
+def test_enums_are_case_insensitive(tmp_path):
+    rows = [
+        r(row_type="DAY_HEADER", Day="Day 1", Date="2026-09-27", Location="Vancouver",
+          Zone="America/Vancouver", fixed_time="07:00"),
+        r(row_type="Stop", Plan="Stanley Park", Travel="0:20", **{"Fun Time": "1:00"},
+          Zone="America/Vancouver", timing="FIXED", kind="POI", How="Drive", fixed_time="09:00"),
+        r(row_type="Lodging", Plan="Listel Vancouver", Zone="America/Vancouver", fixed_time="15:00"),
+        r(row_type="Day_End", Location="Vancouver"),
+    ]
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    assert result.trip.days[0].stops[0].kind == "poi"
+    assert result.trip.days[0].stops[0].how == "drive"
+
+
+def test_fixed_timing_without_fixed_time_is_an_error(tmp_path):
+    rows = happy_path_rows()
+    rows.append(stop("No time set", "0:10", "0:20", "America/Vancouver", timing="fixed", fixed_time=""))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("fixed_time" in e and "required when timing=fixed" in e for e in result.errors)
+
+
+def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
+    rows = happy_path_rows()
+    rows[3] = r(row_type="lodging", Plan="Listel Vancouver", Zone="America/Vancouver",
+                fixed_time="15:00", Date="Listel")
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert any("unexpected value in Date column" in w and "Listel" in w for w in result.warnings)
