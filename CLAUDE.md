@@ -30,7 +30,7 @@ those until asked; they are scoped per `README.md` §10.
 ## Test command
 
     npm run build && npm test                    # frontend: tsc + vite build, then Playwright
-    .venv/bin/python -m pytest etl -q            # ETL: 31 tests
+    .venv/bin/python -m pytest etl -q            # ETL: 37 tests
 
 **The build is not optional.** `npm test` runs Playwright against `vite preview`, which
 serves whatever is already in `dist/` — verified 4 Sep 2026 that breaking `src/App.tsx`
@@ -163,20 +163,20 @@ an infra blind spot.
 
 ### Test reality
 
-- **`etl/parse.py` is the only well-tested module** — 31 pytest tests, 78% statement and
-  branch coverage measured 4 Sep 2026 (project total 83%). Real error branches are
+- **`etl/parse.py` is the only well-tested module** — 37 pytest tests, 80% statement and
+  branch coverage measured 4 Sep 2026 (project total 84%). Real error branches are
   exercised: bad durations, prose in `Fun Time`, shifted rows, invalid timezone,
   non-contiguous days, `fixed` without `fixed_time`, missing headers, empty vs invalid
   `row_type`.
 - **Untested branches in `etl/parse.py`, all reachable** — treat a change touching any of
   them as `-t 2`/`-t 3`: `day_offset` and `arrive_before` parsing (and their error paths);
-  the `leg`, `drive_total` and `day_end` row types, including the `day_end` timezone
-  fallback; lodging with a missing name or unparseable check-in; a stop missing `Plan` or
-  with a blank/invalid `How`; every `day_header` failure (no `Day N`, missing `Date`, bad
-  `Zone`, bad anchor time); a row before any `day_header`; the day-timezone-from-first-stop
-  fallback and the no-timezone error; the empty-sheet case.
-- **`etl/loaders.py`** is 100% covered but only against a fake `gspread`. It has never run
-  against a real sheet — the module says so itself.
+  the `drive_total` row type and the `day_end` timezone fallback; lodging with a missing
+  name or unparseable check-in; a stop missing `Plan` or with a blank `How`; every
+  `day_header` failure (no `Day N`, missing `Date`, bad `Zone`, bad anchor time); a row
+  before any `day_header`; the day-timezone-from-first-stop fallback and the no-timezone
+  error; the empty-sheet and no-`day_header`-rows cases.
+- **`etl/loaders.py`** is near-fully covered, but only against a fake `gspread`. It has
+  never run against a real sheet — the module says so itself.
 - **`src/` takes the happy path and only the happy path.** One Playwright test asserting
   three testids are visible. **`src/lib/api.ts` has zero tests and there is no JS/TS
   unit-test runner installed** — its offline fallback (fetch fails → serve cached
