@@ -314,3 +314,50 @@ def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
 
     assert result.trip is not None
     assert any("unexpected value in Date column" in w and "Listel" in w for w in result.warnings)
+
+
+def test_blank_kind_and_timing_default_and_do_not_error(tmp_path):
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        r(row_type="stop", Plan="Stanley Park", Travel="0:20", **{"Fun Time": "1:00"},
+          Zone="America/Vancouver", How="drive", kind="", timing=""),
+        lodging("Listel Vancouver", "America/Vancouver"),
+        day_end("Vancouver"),
+    ]
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    stop_out = result.trip.days[0].stops[0]
+    assert stop_out.kind == "poi"
+    assert stop_out.timing == "floating"
+
+
+def test_kind_and_timing_columns_entirely_absent_from_sheet(tmp_path):
+    headers = [h for h in HEADERS if h not in ("kind", "timing")]
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        r(row_type="stop", Plan="Stanley Park", Travel="0:20", **{"Fun Time": "1:00"},
+          Zone="America/Vancouver", How="drive"),
+        lodging("Listel Vancouver", "America/Vancouver"),
+        day_end("Vancouver"),
+    ]
+    path = write_csv(tmp_path, rows, headers=headers)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    stop_out = result.trip.days[0].stops[0]
+    assert stop_out.kind == "poi"
+    assert stop_out.timing == "floating"
+
+
+def test_invalid_kind_or_timing_value_still_errors(tmp_path):
+    rows = happy_path_rows()
+    rows.append(stop("Bad kind", "0:10", "0:20", "America/Vancouver", kind="bogus"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("kind" in e and "bogus" in e for e in result.errors)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -14,9 +15,11 @@ from .report import render_report
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="where-to-next ETL: stage 1 (parse + validate, no network)")
-    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group = parser.add_mutually_exclusive_group()
     source_group.add_argument("--csv", type=Path, help="Path to a local CSV export of the Itinerary sheet")
-    source_group.add_argument("--sheet-id", help="Google Sheet ID (reads GOOGLE_SHEETS_SA_KEY from env)")
+    source_group.add_argument(
+        "--sheet-id", help="Google Sheet ID. Falls back to the GOOGLE_SHEET_ID env var if omitted."
+    )
     parser.add_argument(
         "--worksheet",
         help="Worksheet/tab name to read (Sheets source only). "
@@ -25,12 +28,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, default=Path("etl"), help="Where to write trip.json and report.md")
     args = parser.parse_args(argv)
 
+    sheet_id = args.sheet_id or os.environ.get("GOOGLE_SHEET_ID")
+
     if args.csv:
         source = CsvLoader(args.csv)
         revision = hashlib.sha256(args.csv.read_bytes()).hexdigest()
-    else:
-        source = SheetsLoader(args.sheet_id, args.worksheet)
+    elif sheet_id:
+        source = SheetsLoader(sheet_id, args.worksheet)
         revision = None
+    else:
+        parser.error("one of --csv, --sheet-id, or the GOOGLE_SHEET_ID env var is required")
 
     result = parse_rows(source)
 

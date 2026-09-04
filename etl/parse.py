@@ -20,13 +20,15 @@ from .models import Day, Lodging, Stop, Trip, TripMeta
 
 REQUIRED_HEADERS = [
     "day", "date", "location", "travel", "fun time", "plan", "address",
-    "how", "zone", "price", "notes", "links", "row_type", "kind", "timing",
+    "how", "zone", "price", "notes", "links", "row_type",
 ]
 
 ROW_TYPES = {"day_header", "leg", "drive_total", "stop", "lodging", "day_end", "blank"}
 KINDS = {"poi", "meal", "activity", "lodging", "flight", "transfer"}
 TIMINGS = {"fixed", "floating"}
 HOWS = {"drive", "walk", "taxi", "shuttle", "plane"}
+DEFAULT_KIND = "poi"
+DEFAULT_TIMING = "floating"
 
 DURATION_RE = re.compile(r"^\d{1,2}:\d{2}$")
 DAY_RE = re.compile(r"day\s*(\d+)", re.IGNORECASE)
@@ -280,18 +282,14 @@ def parse_rows(source: RowSource) -> ParseResult:
             missing_fields.append("Plan")
 
         kind_raw = cell(row, "kind")
-        kind = kind_raw.lower()
-        if not kind:
-            missing_fields.append("kind")
-        elif kind not in KINDS:
+        kind = kind_raw.lower() or DEFAULT_KIND
+        if kind not in KINDS:
             errors.append(f"Row {row_num}, column 'kind': {kind_raw!r} not in {sorted(KINDS)}")
             missing_fields.append("kind")
 
         timing_raw = cell(row, "timing")
-        timing = timing_raw.lower()
-        if not timing:
-            missing_fields.append("timing")
-        elif timing not in TIMINGS:
+        timing = timing_raw.lower() or DEFAULT_TIMING
+        if timing not in TIMINGS:
             errors.append(f"Row {row_num}, column 'timing': {timing_raw!r} not in {sorted(TIMINGS)}")
             missing_fields.append("timing")
 

@@ -24,8 +24,11 @@ __pycache__/
 etl.egg-info/
 .env
 .env.*
+.secrets/
 *service-account*.json
 *credentials*.json
+*sa-key*.json
+*-key.json
 
 # Editor directories and files
 .vscode/*
