@@ -190,6 +190,30 @@ def parse_rows(source: RowSource) -> ParseResult:
 
         counts[row_type] = counts.get(row_type, 0) + 1
 
+        # Structural row types shouldn't carry stop content — if they do, someone
+        # probably mistyped row_type rather than meaning it literally.
+        if row_type in {"leg", "drive_total", "day_end", "blank"}:
+            plan_val = cell(row, "plan")
+            if plan_val:
+                warnings.append(
+                    f"Row {row_num}: row_type={row_type} but Plan is non-empty "
+                    f"({plan_val!r}) — possible misclassification"
+                )
+
+        if row_type in {"leg", "drive_total"}:
+            fixed_time_val = cell(row, "fixed_time")
+            if fixed_time_val:
+                warnings.append(
+                    f"Row {row_num}: row_type={row_type} but fixed_time is non-empty "
+                    f"({fixed_time_val!r}) — possible misclassification"
+                )
+            timing_val = cell(row, "timing")
+            if timing_val:
+                warnings.append(
+                    f"Row {row_num}: row_type={row_type} but timing is non-empty "
+                    f"({timing_val!r}) — possible misclassification"
+                )
+
         if row_type == "blank":
             continue
 
