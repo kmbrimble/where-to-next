@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from etl.loaders import DEFAULT_WORKSHEET_NAME, SheetsLoader
+from etl.loaders import DEFAULT_WORKSHEET_NAME, SheetsLoader, sheets_serial_to_iso_date
 
 
 class FakeWorksheetNotFound(Exception):
@@ -19,11 +19,14 @@ class FakeWorksheetNotFound(Exception):
 
 
 class FakeWorksheet:
-    def __init__(self, title: str, rows: list[list[str]]):
+    def __init__(self, title: str, rows: list[list[str]], unformatted_rows: list[list] | None = None):
         self.title = title
         self._rows = rows
+        self._unformatted_rows = unformatted_rows if unformatted_rows is not None else rows
 
-    def get_all_values(self) -> list[list[str]]:
+    def get_all_values(self, value_render_option: str | None = None) -> list[list]:
+        if value_render_option == "UNFORMATTED_VALUE":
+            return self._unformatted_rows
         return self._rows
 
 
@@ -94,3 +97,37 @@ def test_missing_worksheet_lists_available_names(fake_gspread):
     assert "Nonexistent Tab" in message
     assert DEFAULT_WORKSHEET_NAME in message
     assert "Checklist" in message
+
+
+def test_sheets_serial_to_iso_date():
+    # 46292 is the real serial for 2026-09-27, confirmed against the live sheet.
+    assert sheets_serial_to_iso_date(46292) == "2026-09-27"
+
+
+def test_date_column_serial_converted_to_iso(monkeypatch):
+    formatted = [
+        ["Day", "Date", "row_type"],
+        ["Day 0", "27-Sep", "day_header"],
+        ["", "Sun", "leg"],
+        ["", "", "stop"],
+    ]
+    unformatted = [
+        ["Day", "Date", "row_type"],
+        ["Day 0", 46292, "day_header"],
+        ["", "Sun", "leg"],
+        ["", "", "stop"],
+    ]
+    spreadsheet = FakeSpreadsheet([FakeWorksheet(DEFAULT_WORKSHEET_NAME, formatted, unformatted)])
+
+    module = types.ModuleType("gspread")
+    module.service_account_from_dict = lambda key: FakeClient(spreadsheet)
+    module.exceptions = types.SimpleNamespace(WorksheetNotFound=FakeWorksheetNotFound)
+    monkeypatch.setitem(sys.modules, "gspread", module)
+    monkeypatch.setenv("GOOGLE_SHEETS_SA_KEY", json.dumps({"type": "service_account"}))
+    monkeypatch.setenv("GOOGLE_SHEET_ID", "fake-sheet-id")
+
+    rows = SheetsLoader()()
+
+    assert rows[1][1] == "2026-09-27"  # real date serial converted
+    assert rows[2][1] == "Sun"  # non-numeric (day-of-week label) passed through
+    assert rows[3][1] == ""  # blank passed through

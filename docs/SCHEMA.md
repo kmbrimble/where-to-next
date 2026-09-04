@@ -136,12 +136,19 @@ Travel mode for the leg arriving at this stop. Drives three things:
 | `drive` | `driving` | ✅ computed | ✅ yes |
 | `walk` | `walking` | ✅ computed | ❌ no |
 | `taxi` | `driving` | ✅ computed | ❌ no — arrival isn't yours to control |
+| `train` | `transit` | ❌ | ❌ no — scheduled, not traffic-affected |
 | `shuttle` | none | ❌ | ❌ no |
 | `plane` | none | ❌ straight line only | ❌ no |
+| `transit` | `transit` | ❌ | ❌ no — catch-all for compound public-transit legs |
 
 **Only `drive` legs are recalculated against live traffic.** A flight's block time does
 not change because the I-15 is congested, and silently re-timing one would corrupt the
 whole day's cascade. This is the main reason the column exists.
+
+**`transit` is a catch-all**, not one specific mode — the sheet has real compound legs
+like `Walk + Aquabus` and `Bus & walk` that don't map to any single value here. The ETL
+normalises both of those literal strings to `transit` rather than rejecting them; add
+more aliases here if further compound values turn up.
 
 ### `row_type`
 
@@ -412,12 +419,16 @@ loud failure is the point.
 - Resolved coordinates outside the trip bounding box
 - `Zone` value not a valid IANA timezone identifier
 - Day numbers not contiguous
-- A day with no constraint — nothing `fixed` and no `lodging` check-in
 
 **Warnings (build passes, logged to the report):**
 - `row_type` empty — row skipped, not yet migrated
 - A stop with `Fun Time = 0` and `timing = floating`
 - A day whose cascade already overruns its own constraints as planned
+- A day with no constraint — nothing `fixed` and no `lodging` check-in. **Temporarily
+  downgraded from an error**: the sheet has no `fixed_time` column yet, so as an error
+  this fails every day by construction, and the schedule engine that actually depends
+  on a day having a constraint doesn't exist yet either. Revert to an error once both
+  of those land.
 - A document whose date matches no day
 - `address_source = geocoded` — flags every stop whose pin was inferred rather than given
 - A geocode returning `APPROXIMATE` or `GEOMETRIC_CENTER` precision

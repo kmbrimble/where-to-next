@@ -175,7 +175,9 @@ def test_row_shifted_one_column_right(tmp_path):
     assert any("Fun Time" in e and "Yes" in e for e in result.errors)
 
 
-def test_day_with_no_constraint_is_an_error(tmp_path):
+def test_day_with_no_constraint_is_a_warning_not_an_error(tmp_path):
+    # Temporarily downgraded — see the comment in parse.py's flush_day(). The sheet
+    # has no fixed_time column yet, so this would fail every real day by construction.
     rows = [
         day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
         stop("Stanley Park", "0:20", "1:00", "America/Vancouver", timing="floating"),
@@ -184,8 +186,9 @@ def test_day_with_no_constraint_is_an_error(tmp_path):
     path = write_csv(tmp_path, rows)
     result = parse_rows(CsvLoader(path))
 
-    assert result.trip is None
-    assert any("no constraint" in e for e in result.errors)
+    assert result.trip is not None
+    assert result.errors == []
+    assert any("no constraint" in w for w in result.warnings)
 
 
 def test_invalid_timezone_is_rejected(tmp_path):
@@ -262,6 +265,44 @@ def test_enums_are_case_insensitive(tmp_path):
     assert result.trip.days[0].stops[0].how == "drive"
 
 
+def test_how_accepts_train_and_transit(tmp_path):
+    rows = happy_path_rows()
+    rows.append(stop("Take the train", "0:20", "0:00", "America/Vancouver", how="train"))
+    rows.append(stop("Public transit leg", "0:15", "0:00", "America/Vancouver", how="transit"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    hows = {s.title: s.how for day in result.trip.days for s in day.stops}
+    assert hows["Take the train"] == "train"
+    assert hows["Public transit leg"] == "transit"
+
+
+def test_compound_how_values_are_aliased_to_transit(tmp_path):
+    rows = happy_path_rows()
+    rows.append(stop("Aquabus stop", "0:20", "0:00", "America/Vancouver", how="Walk + Aquabus"))
+    rows.append(stop("Bus stop", "0:15", "0:00", "America/Vancouver", how="Bus & walk"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    hows = {s.title: s.how for day in result.trip.days for s in day.stops}
+    assert hows["Aquabus stop"] == "transit"
+    assert hows["Bus stop"] == "transit"
+
+
+def test_how_still_rejects_genuinely_unknown_values(tmp_path):
+    rows = happy_path_rows()
+    rows.append(stop("Mystery mode", "0:20", "0:00", "America/Vancouver", how="teleport"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("How" in e and "teleport" in e for e in result.errors)
+
+
 def test_fixed_timing_without_fixed_time_is_an_error(tmp_path):
     rows = happy_path_rows()
     rows.append(stop("No time set", "0:10", "0:20", "America/Vancouver", timing="fixed", fixed_time=""))
@@ -314,6 +355,16 @@ def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
 
     assert result.trip is not None
     assert any("unexpected value in Date column" in w and "Listel" in w for w in result.warnings)
+
+
+def test_day_of_week_in_date_column_on_leg_row_is_not_warned(tmp_path):
+    rows = happy_path_rows()
+    rows.insert(1, r(row_type="leg", Location="Vancouver to Whistler", Date="Sun"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    assert not any("unexpected value in Date column" in w for w in result.warnings)
 
 
 def test_blank_kind_and_timing_default_and_do_not_error(tmp_path):

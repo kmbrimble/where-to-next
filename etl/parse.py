@@ -26,7 +26,10 @@ REQUIRED_HEADERS = [
 ROW_TYPES = {"day_header", "leg", "drive_total", "stop", "lodging", "day_end", "blank"}
 KINDS = {"poi", "meal", "activity", "lodging", "flight", "transfer"}
 TIMINGS = {"fixed", "floating"}
-HOWS = {"drive", "walk", "taxi", "shuttle", "plane"}
+HOWS = {"drive", "walk", "taxi", "train", "shuttle", "plane", "transit"}
+# Real compound-mode values seen in the sheet (e.g. "Walk + Aquabus") — normalised to
+# the transit catch-all rather than treated as invalid.
+HOW_ALIASES = {"bus & walk": "transit", "walk + aquabus": "transit"}
 DEFAULT_KIND = "poi"
 DEFAULT_TIMING = "floating"
 
@@ -144,10 +147,15 @@ def parse_rows(source: RowSource) -> ParseResult:
         if not cd["anchor_time"]:
             warnings.append(f"Day {cd['day']}: no anchor_time (fixed_time empty on day_header)")
 
+        # Downgraded to a warning: the schedule engine that actually depends on a
+        # constraint doesn't exist yet, and the sheet has no fixed_time column to
+        # populate one with — as an error this fails every day by construction. Revert
+        # to an error once the schedule engine lands and fixed_time is a real column
+        # (docs/SCHEMA.md §7).
         has_fixed = any(s.timing == "fixed" for s in cd["stops"])
         has_checkin = cd["lodging"] is not None and bool(cd["lodging"].check_in)
         if not has_fixed and not has_checkin:
-            errors.append(f"Day {cd['day']}: no constraint — nothing fixed and no lodging check-in")
+            warnings.append(f"Day {cd['day']}: no constraint — nothing fixed and no lodging check-in")
 
         try:
             days.append(Day(
@@ -235,9 +243,12 @@ def parse_rows(source: RowSource) -> ParseResult:
             errors.append(f"Row {row_num}: {row_type} row appears before any day_header")
             continue
 
-        stray_date = cell(row, "date")
-        if stray_date:
-            warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
+        # leg rows deliberately carry a day-of-week label ("Sun", "Mon") in the Date
+        # column — sheet labelling, not corruption, so don't warn about it there.
+        if row_type != "leg":
+            stray_date = cell(row, "date")
+            if stray_date:
+                warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
 
         if row_type == "leg":
             current_day["leg"] = cell(row, "location") or None
@@ -322,6 +333,7 @@ def parse_rows(source: RowSource) -> ParseResult:
 
         how_raw = cell(row, "how")
         how: str | None = how_raw.lower()
+        how = HOW_ALIASES.get(how, how)
         if not how:
             warnings.append(f"Row {row_num}: How is blank — no deep link mode for this stop")
             how = None
