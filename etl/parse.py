@@ -142,6 +142,7 @@ def parse_rows(source: RowSource) -> ParseResult:
     days: list[Day] = []
     current_day: dict | None = None
     seq = 0
+    seen_ids: dict[str, list[int]] = {}
 
     def parse_stop_content(row: list[str], row_num: int) -> Stop | None:
         """Build a Stop from a row's stop-shaped columns (Travel, Fun Time, Plan,
@@ -242,12 +243,38 @@ def parse_rows(source: RowSource) -> ParseResult:
         documents_raw = cell(row, "documents")
         links_raw = cell(row, "links")
 
+        # Cache columns for stage-2 location resolution (etl/locate.py). All optional
+        # and absent from the sheet entirely today, so this is inert until they exist.
+        id_raw = cell(row, "id")
+        lat_raw = cell(row, "lat")
+        lng_raw = cell(row, "lng")
+
+        lat = None
+        if lat_raw:
+            try:
+                lat = float(lat_raw)
+            except ValueError:
+                errors.append(f"Row {row_num}, column 'lat': {lat_raw!r} is not a number")
+                return None
+
+        lng = None
+        if lng_raw:
+            try:
+                lng = float(lng_raw)
+            except ValueError:
+                errors.append(f"Row {row_num}, column 'lng': {lng_raw!r} is not a number")
+                return None
+
         try:
-            return Stop(
-                id=f"d{current_day['day']:02d}-s{seq:02d}",
+            new_stop = Stop(
+                id=id_raw or f"d{current_day['day']:02d}-s{seq:02d}",
                 seq=seq,
                 title=plan,
                 kind=kind,
+                lat=lat,
+                lng=lng,
+                place_id=cell(row, "place_id") or None,
+                resolved_from=cell(row, "resolved_from") or None,
                 timezone=zone,
                 day_offset=day_offset,
                 how=how,
@@ -261,10 +288,17 @@ def parse_rows(source: RowSource) -> ParseResult:
                 price=cell(row, "price") or None,
                 links=[links_raw] if links_raw else [],
                 documents=[d.strip() for d in documents_raw.split(",") if d.strip()] or None,
+                row_num=row_num,
+                address=cell(row, "address") or None,
             )
         except ValidationError as e:
             errors.append(f"Row {row_num}: {e}")
             return None
+
+        if id_raw:
+            seen_ids.setdefault(id_raw, []).append(row_num)
+
+        return new_stop
 
     def flush_day() -> None:
         nonlocal current_day
@@ -449,6 +483,10 @@ def parse_rows(source: RowSource) -> ParseResult:
     for a, b in zip(day_numbers, day_numbers[1:]):
         if b != a + 1:
             errors.append(f"Day numbers not contiguous: Day {a} followed by Day {b}")
+
+    for dup_id, dup_rows in seen_ids.items():
+        if len(dup_rows) > 1:
+            errors.append(f"Duplicate id {dup_id!r} on rows {dup_rows}")
 
     trip = None
     if not errors and days:
