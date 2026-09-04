@@ -359,14 +359,6 @@ def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
     assert any("unexpected value in Date column" in w and "Listel" in w for w in result.warnings)
 
 
-def test_day_of_week_in_date_column_on_leg_row_is_not_warned(tmp_path):
-    rows = happy_path_rows()
-    rows.insert(1, r(row_type="leg", Location="Vancouver to Whistler", Date="Sun"))
-    path = write_csv(tmp_path, rows)
-    result = parse_rows(CsvLoader(path))
-
-    assert result.trip is not None
-    assert not any("unexpected value in Date column" in w for w in result.warnings)
 
 
 def test_blank_kind_and_timing_default_and_do_not_error(tmp_path):
@@ -416,7 +408,7 @@ def test_invalid_kind_or_timing_value_still_errors(tmp_path):
     assert any("kind" in e and "bogus" in e for e in result.errors)
 
 
-@pytest.mark.parametrize("row_type", ["leg", "drive_total", "day_end", "blank"])
+@pytest.mark.parametrize("row_type", ["day_end", "blank"])
 def test_plan_on_structural_row_is_a_misclassification_warning(tmp_path, row_type):
     rows = happy_path_rows()
     rows.append(r(row_type=row_type, Plan="Stray stop title"))
@@ -441,43 +433,64 @@ def test_plan_on_stop_or_lodging_row_does_not_warn(tmp_path):
     assert not any("possible misclassification" in w for w in result.warnings)
 
 
-@pytest.mark.parametrize("row_type", ["leg", "drive_total"])
-def test_fixed_time_on_leg_or_drive_total_is_a_misclassification_warning(tmp_path, row_type):
+def test_leg_and_drive_total_are_no_longer_valid_row_types(tmp_path):
+    # The sheet packs a real stop into these rows (Plan holds a stop, Location holds
+    # a journey label or drive duration) — row_type modelled them as structural, which
+    # was wrong. Both are now unrecognised values, same as any other typo.
     rows = happy_path_rows()
-    rows.append(r(row_type=row_type, fixed_time="16:30"))
+    rows.append(r(row_type="leg", Location="Vancouver to Whistler"))
+    rows.append(r(row_type="drive_total", Location="6h 19m"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("row_type 'leg' not in" in e for e in result.errors)
+    assert any("row_type 'drive_total' not in" in e for e in result.errors)
+
+
+def test_stop_row_with_populated_location_parses_normally(tmp_path):
+    # Location is dual-purpose in the sheet (journey label / drive duration on rows
+    # that are now gone) — a stop row may still have Location filled in, and it must
+    # be silently ignored, not warned or errored on.
+    rows = happy_path_rows()
+    rows.append(r(
+        row_type="stop", Plan="Roadside viewpoint", Travel="0:15", **{"Fun Time": "0:10"},
+        Zone="America/Vancouver", timing="floating", kind="poi", How="drive",
+        Location="Sea to Sky Highway",
+    ))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    assert not any("possible misclassification" in w for w in result.warnings)
+    titles = [s.title for day in result.trip.days for s in day.stops]
+    assert "Roadside viewpoint" in titles
+
+
+def test_day_leg_is_derived_from_start_and_end_location(tmp_path):
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        stop("Stanley Park", "0:20", "1:00", "America/Vancouver",
+             timing="fixed", fixed_time="09:00"),
+        day_end("Whistler"),
+    ]
     path = write_csv(tmp_path, rows)
     result = parse_rows(CsvLoader(path))
 
     assert result.trip is not None
-    assert any(
-        f"row_type={row_type} but fixed_time is non-empty" in w and "16:30" in w
-        for w in result.warnings
-    )
+    assert result.trip.days[0].leg == "Vancouver to Whistler"
 
 
-@pytest.mark.parametrize("row_type", ["leg", "drive_total"])
-def test_timing_on_leg_or_drive_total_is_a_misclassification_warning(tmp_path, row_type):
-    rows = happy_path_rows()
-    rows.append(r(row_type=row_type, timing="fixed"))
+def test_day_leg_uses_single_location_when_start_equals_end(tmp_path):
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        stop("Stanley Park", "0:20", "1:00", "America/Vancouver",
+             timing="fixed", fixed_time="09:00"),
+        day_end("Vancouver"),
+    ]
     path = write_csv(tmp_path, rows)
     result = parse_rows(CsvLoader(path))
 
     assert result.trip is not None
-    assert any(
-        f"row_type={row_type} but timing is non-empty" in w and "fixed" in w
-        for w in result.warnings
-    )
-
-
-def test_fixed_time_and_timing_on_day_end_or_blank_are_not_flagged(tmp_path):
-    # day_end/blank only get the Plan check per the task's explicit scope — they don't
-    # have a "leg" concept, so fixed_time/timing content there isn't misclassification
-    # in the same sense.
-    rows = happy_path_rows()
-    rows.append(r(row_type="day_end", fixed_time="16:30", timing="fixed", Location="Vancouver"))
-    path = write_csv(tmp_path, rows)
-    result = parse_rows(CsvLoader(path))
-
-    assert result.trip is not None
-    assert not any("fixed_time is non-empty" in w for w in result.warnings)
-    assert not any("timing is non-empty" in w for w in result.warnings)
+    assert result.trip.days[0].leg == "Vancouver"

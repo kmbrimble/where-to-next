@@ -158,8 +158,6 @@ corruption. Making it explicit costs one column and breaks no formulas.
 | Value | Meaning | Key columns |
 |---|---|---|
 | `day_header` | Start of a day | `Day`, `Date`, `Location` = start location |
-| `leg` | The day's journey label | `Location` = `Vancouver to Whistler` |
-| `drive_total` | Total driving for the day | Ignored, recomputed |
 | `stop` | An itinerary item | `Travel`, `Fun Time`, `Plan`, `Zone` + new columns |
 | `lodging` | Where you sleep that night | `Plan` = hotel name |
 | `day_end` | Terminal row | `Location` = end location |
@@ -170,6 +168,14 @@ a build failure. This is deliberate: it's what lets the sheet be migrated
 incrementally, tagging one range of days at a time rather than all ~276 rows at once. A
 `row_type` that's present but not one of the values above **is** a build failure — a
 typo shouldn't be silently treated the same as "not yet migrated."
+
+**`leg` and `drive_total` were removed from this enum.** Both looked structural — a
+journey label, a recomputed total — but the real sheet packs an actual stop into the
+same row (`Plan` holds a real stop title while `Location` holds the journey label or
+drive duration), so a row type that treated the row as pure structure was silently
+dropping real data. Those rows are retyped `stop` instead; `Location` on a `stop` row
+is simply ignored, whatever it contains. `day.leg` is now **derived**, not read: see
+below.
 
 ### `day_offset`
 
@@ -387,6 +393,10 @@ small enough to ship whole and precache. No lazy loading, no per-day splitting.
 
 ### Notes on the shape
 
+- **`day.leg` is derived, not read** — composed as `"<start_location> to <end_location>"`
+  from the day's `day_header` and `day_end` rows (§2's `row_type` note explains why
+  there's no `leg` row to read it from anymore). If start and end are the same, `leg`
+  is just that single location, not `"X to X"`.
 - **Durations are integer minutes.** No `HH:MM` strings, no floats.
 - **Times are local wall-clock strings** paired with an IANA `timezone`. Never UTC, never
   a fixed offset.
@@ -430,10 +440,9 @@ loud failure is the point.
   on a day having a constraint doesn't exist yet either. Revert to an error once both
   of those land.
 - A document whose date matches no day
-- A `leg`, `drive_total`, `day_end` or `blank` row with non-empty `Plan` — these
-  row types are structural and shouldn't carry a stop title, so content there
-  usually means `row_type` was mistyped. A `leg` or `drive_total` row with a
-  non-empty `fixed_time` or `timing` gets the same warning, for the same reason.
+- A `day_end` or `blank` row with non-empty `Plan` — these row types are structural
+  and shouldn't carry a stop title, so content there usually means `row_type` was
+  mistyped.
 - `address_source = geocoded` — flags every stop whose pin was inferred rather than given
 - A geocode returning `APPROXIMATE` or `GEOMETRIC_CENTER` precision
 
