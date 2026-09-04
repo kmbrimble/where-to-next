@@ -359,6 +359,21 @@ def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
     assert any("unexpected value in Date column" in w and "Listel" in w for w in result.warnings)
 
 
+def test_valid_date_on_stop_row_does_not_warn(tmp_path):
+    # A stop retyped from `leg` can legitimately carry its own correct date — that's
+    # not the "hotel name in the Date column" corruption pattern, so it's silent.
+    rows = happy_path_rows()
+    rows.append(r(
+        row_type="stop", Plan="Whistler Village Stroll", Travel="0:10", **{"Fun Time": "0:20"},
+        Zone="America/Vancouver", timing="floating", kind="poi", How="walk",
+        Date="2026-09-28",
+    ))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert not any("unexpected value in Date column" in w for w in result.warnings)
+
+
 
 
 def test_blank_kind_and_timing_default_and_do_not_error(tmp_path):

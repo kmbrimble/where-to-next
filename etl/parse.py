@@ -397,7 +397,7 @@ def parse_rows(source: RowSource) -> ParseResult:
             continue
 
         stray_date = cell(row, "date")
-        if stray_date:
+        if stray_date and parse_date(stray_date) is None:
             warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
 
         if row_type == "day_end":
