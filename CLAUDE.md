@@ -30,7 +30,7 @@ those until asked; they are scoped per `README.md` §10.
 ## Test command
 
     npm run build && npm test                    # frontend: tsc + vite build, then Playwright
-    .venv/bin/python -m pytest etl -q            # ETL: 37 tests
+    .venv/bin/python -m pytest etl -q            # ETL
 
 **The build is not optional.** `npm test` runs Playwright against `vite preview`, which
 serves whatever is already in `dist/` — verified 4 Sep 2026 that breaking `src/App.tsx`
@@ -163,23 +163,26 @@ an infra blind spot.
 
 ### Test reality
 
-- **`etl/parse.py` is the only well-tested module** — 37 pytest tests, 80% statement and
-  branch coverage measured 4 Sep 2026 (project total 84%). Real error branches are
-  exercised: bad durations, prose in `Fun Time`, shifted rows, invalid timezone,
-  non-contiguous days, `fixed` without `fixed_time`, missing headers, empty vs invalid
-  `row_type`.
-- **Untested branches in `etl/parse.py`, all reachable** — treat a change touching any of
-  them as `-t 2`/`-t 3`: `day_offset` and `arrive_before` parsing (and their error paths);
-  the `drive_total` row type and the `day_end` timezone fallback; lodging with a missing
-  name or unparseable check-in; a stop missing `Plan` or with a blank `How`; every
-  `day_header` failure (no `Day N`, missing `Date`, bad `Zone`, bad anchor time); a row
-  before any `day_header`; the day-timezone-from-first-stop fallback and the no-timezone
-  error; the empty-sheet and no-`day_header`-rows cases.
-- **`etl/loaders.py`** is near-fully covered, but only against a fake `gspread`. It has
-  never run against a real sheet — the module says so itself.
+Shape, not scores — coverage numbers go stale within a commit or two, so this says which
+paths are genuinely exercised and which only ever take the happy path. Check whether a
+test names the branch you changed; don't trust this list to still be exhaustive.
+
+- **`etl/parse.py` is the only module with real branch coverage.** Its validation errors
+  are properly exercised — bad durations, prose in a duration column, shifted rows,
+  invalid timezone, non-contiguous days, `fixed` without `fixed_time`, missing headers,
+  empty vs present-but-invalid `row_type`. Treat this module as tested.
+- **Its thin edges, in classes** — a change landing in one of these is `-t 2`/`-t 3`: the
+  row types other than `day_header`, `stop` and `lodging`; the optional-column parsers
+  (`day_offset`, `arrive_before`) and their error paths; the field-level `day_header`
+  failures; and the day-level fallbacks (timezone inferred from the first stop, no
+  timezone at all, empty sheet, no `day_header` rows).
+- **`etl/loaders.py`** is exercised only against a fake `gspread`. It has never run
+  against a real sheet — the module says so itself.
 - **`src/` takes the happy path and only the happy path.** One Playwright test asserting
-  three testids are visible. **`src/lib/api.ts` has zero tests and there is no JS/TS
-  unit-test runner installed** — its offline fallback (fetch fails → serve cached
-  snapshot), its `JSON.parse` catch and its `localStorage` writes are all unexercised. Any
-  change there is `-t 3`.
+  the app shell's testids are visible. **`src/lib/api.ts` has no tests and there is no
+  JS/TS unit-test runner installed** — its offline fallback (fetch fails → serve cached
+  snapshot), its `JSON.parse` catch and its `localStorage` writes are all unexercised.
+  Any change there is `-t 3`.
 - **`worker/index.ts`** has no tests and no harness.
+- **Nothing runs the ETL tests on push or PR** (see Test command), so `etl/` coverage is
+  only ever as current as the last hand-run of pytest.
