@@ -143,161 +143,11 @@ def parse_rows(source: RowSource) -> ParseResult:
     current_day: dict | None = None
     seq = 0
 
-    def flush_day() -> None:
-        nonlocal current_day
-        if current_day is None:
-            return
-        cd = current_day
-        current_day = None
-
-        timezone = cd["timezone"]
-        if not timezone and cd["stops"]:
-            timezone = cd["stops"][0].timezone
-        if not timezone:
-            errors.append(f"Day {cd['day']}: could not determine timezone (no Zone on day_header and no stops)")
-            timezone = ""
-
-        if not cd["anchor_time"]:
-            warnings.append(f"Day {cd['day']}: no anchor_time (fixed_time empty on day_header)")
-
-        # Downgraded to a warning: the schedule engine that actually depends on a
-        # constraint doesn't exist yet, and the sheet has no fixed_time column to
-        # populate one with — as an error this fails every day by construction. Revert
-        # to an error once the schedule engine lands and fixed_time is a real column
-        # (docs/SCHEMA.md §7).
-        has_fixed = any(s.timing == "fixed" for s in cd["stops"])
-        has_checkin = cd["lodging"] is not None and bool(cd["lodging"].check_in)
-        if not has_fixed and not has_checkin:
-            warnings.append(f"Day {cd['day']}: no constraint — nothing fixed and no lodging check-in")
-
-        try:
-            days.append(Day(
-                day=cd["day"],
-                date=cd["date"],
-                leg=derive_leg(cd["start_location"], cd["end_location"]),
-                start_location=cd["start_location"],
-                end_location=cd["end_location"],
-                timezone=timezone,
-                anchor_time=cd["anchor_time"],
-                lodging=cd["lodging"],
-                stops=cd["stops"],
-            ))
-        except ValidationError as e:
-            errors.append(f"Day {cd['day']}: {e}")
-
-    for row_num, row in enumerate(data_rows, start=2):
-        if not any(c.strip() for c in row):
-            continue
-
-        row_type_raw = cell(row, "row_type")
-        row_type = row_type_raw.lower()
-
-        if not row_type:
-            warnings.append(f"Row {row_num}: empty row_type — skipped")
-            skipped += 1
-            continue
-
-        if row_type not in ROW_TYPES:
-            errors.append(f"Row {row_num}: row_type {row_type_raw!r} not in {sorted(ROW_TYPES)}")
-            continue
-
-        counts[row_type] = counts.get(row_type, 0) + 1
-
-        # day_end/blank are structural — they shouldn't carry stop content. If they
-        # do, row_type was probably mistyped rather than meant literally.
-        if row_type in {"day_end", "blank"}:
-            plan_val = cell(row, "plan")
-            if plan_val:
-                warnings.append(
-                    f"Row {row_num}: row_type={row_type} but Plan is non-empty "
-                    f"({plan_val!r}) — possible misclassification"
-                )
-
-        if row_type == "blank":
-            continue
-
-        if row_type == "day_header":
-            flush_day()
-            seq = 0
-            day_field = cell(row, "day")
-            m = DAY_RE.search(day_field)
-            if not m:
-                errors.append(f"Row {row_num}, column 'Day': {day_field!r} doesn't match 'Day N'")
-                continue
-            day_num = int(m.group(1))
-
-            date_raw = cell(row, "date")
-            date_val = None
-            if not date_raw:
-                errors.append(f"Row {row_num}, column 'Date': day_header missing Date")
-            else:
-                date_val = parse_date(date_raw)
-                if date_val is None:
-                    errors.append(
-                        f"Row {row_num}, column 'Date': {date_raw!r} is not a valid date "
-                        "(expected YYYY-MM-DD or D/M/YYYY)"
-                    )
-
-            zone = cell(row, "zone")
-            if zone and not valid_timezone(zone):
-                errors.append(f"Row {row_num}, column 'Zone': {zone!r} is not a valid IANA timezone")
-
-            anchor_raw = cell(row, "fixed_time")
-            anchor = None
-            if anchor_raw:
-                anchor = parse_time(anchor_raw)
-                if anchor is None:
-                    errors.append(f"Row {row_num}, column 'fixed_time': {anchor_raw!r} is not a valid HH:MM time")
-
-            current_day = {
-                "day": day_num,
-                "date": date_val or "",
-                "start_location": cell(row, "location") or None,
-                "end_location": None,
-                "timezone": zone or None,
-                "anchor_time": anchor or None,
-                "lodging": None,
-                "stops": [],
-            }
-            continue
-
-        if current_day is None:
-            errors.append(f"Row {row_num}: {row_type} row appears before any day_header")
-            continue
-
-        stray_date = cell(row, "date")
-        if stray_date:
-            warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
-
-        if row_type == "day_end":
-            current_day["end_location"] = cell(row, "location") or None
-            if not current_day["timezone"]:
-                zone = cell(row, "zone")
-                if zone:
-                    current_day["timezone"] = zone
-            continue
-
-        if row_type == "lodging":
-            name = cell(row, "plan")
-            if not name:
-                errors.append(f"Row {row_num}, column 'Plan': lodging row missing hotel name")
-            check_in_raw = cell(row, "fixed_time")
-            check_in = None
-            if check_in_raw:
-                check_in = parse_time(check_in_raw)
-                if check_in is None:
-                    errors.append(
-                        f"Row {row_num}, column 'fixed_time': {check_in_raw!r} is not a valid HH:MM time"
-                    )
-            current_day["lodging"] = Lodging(
-                name=name or "",
-                check_in=check_in,
-                notes=cell(row, "notes") or None,
-            )
-            continue
-
-        # row_type == "stop"
-        seq += 1
+    def parse_stop_content(row: list[str], row_num: int) -> Stop | None:
+        """Build a Stop from a row's stop-shaped columns (Travel, Fun Time, Plan,
+        Address, How, Zone, timing, fixed_time, ...). Used for stop rows, and for
+        day_header/day_end rows that also carry a Plan — the sheet packs both a
+        structural purpose and a real stop into the same row on some days."""
         missing_fields: list[str] = []
 
         plan = cell(row, "plan")
@@ -365,7 +215,7 @@ def parse_rows(source: RowSource) -> ParseResult:
 
         if missing_fields:
             errors.append(f"Row {row_num}: stop missing/invalid required field(s): {', '.join(missing_fields)}")
-            continue
+            return None
 
         if dwell_minutes == 0 and timing == "floating":
             warnings.append(f"Row {row_num}: Fun Time = 0 with timing = floating")
@@ -377,7 +227,7 @@ def parse_rows(source: RowSource) -> ParseResult:
                 day_offset = int(day_offset_raw)
             except ValueError:
                 errors.append(f"Row {row_num}, column 'day_offset': {day_offset_raw!r} is not an integer")
-                continue
+                return None
 
         arrive_before_raw = cell(row, "arrive_before")
         arrive_before = None
@@ -387,13 +237,13 @@ def parse_rows(source: RowSource) -> ParseResult:
                 errors.append(
                     f"Row {row_num}, column 'arrive_before': {arrive_before_raw!r} is not a valid H:MM duration"
                 )
-                continue
+                return None
 
         documents_raw = cell(row, "documents")
         links_raw = cell(row, "links")
 
         try:
-            stop = Stop(
+            return Stop(
                 id=f"d{current_day['day']:02d}-s{seq:02d}",
                 seq=seq,
                 title=plan,
@@ -414,9 +264,181 @@ def parse_rows(source: RowSource) -> ParseResult:
             )
         except ValidationError as e:
             errors.append(f"Row {row_num}: {e}")
+            return None
+
+    def flush_day() -> None:
+        nonlocal current_day
+        if current_day is None:
+            return
+        cd = current_day
+        current_day = None
+
+        timezone = cd["timezone"]
+        if not timezone and cd["stops"]:
+            timezone = cd["stops"][0].timezone
+        if not timezone:
+            errors.append(f"Day {cd['day']}: could not determine timezone (no Zone on day_header and no stops)")
+            timezone = ""
+
+        if not cd["anchor_time"]:
+            warnings.append(f"Day {cd['day']}: no anchor_time (fixed_time empty on day_header)")
+
+        # Downgraded to a warning: the schedule engine that actually depends on a
+        # constraint doesn't exist yet, and the sheet has no fixed_time column to
+        # populate one with — as an error this fails every day by construction. Revert
+        # to an error once the schedule engine lands and fixed_time is a real column
+        # (docs/SCHEMA.md §7).
+        has_fixed = any(s.timing == "fixed" for s in cd["stops"])
+        has_checkin = cd["lodging"] is not None and bool(cd["lodging"].check_in)
+        if not has_fixed and not has_checkin:
+            warnings.append(f"Day {cd['day']}: no constraint — nothing fixed and no lodging check-in")
+
+        try:
+            days.append(Day(
+                day=cd["day"],
+                date=cd["date"],
+                leg=derive_leg(cd["start_location"], cd["end_location"]),
+                start_location=cd["start_location"],
+                end_location=cd["end_location"],
+                timezone=timezone,
+                anchor_time=cd["anchor_time"],
+                lodging=cd["lodging"],
+                stops=cd["stops"],
+            ))
+        except ValidationError as e:
+            errors.append(f"Day {cd['day']}: {e}")
+
+    for row_num, row in enumerate(data_rows, start=2):
+        if not any(c.strip() for c in row):
             continue
 
-        current_day["stops"].append(stop)
+        row_type_raw = cell(row, "row_type")
+        row_type = row_type_raw.lower()
+
+        if not row_type:
+            warnings.append(f"Row {row_num}: empty row_type — skipped")
+            skipped += 1
+            continue
+
+        if row_type not in ROW_TYPES:
+            errors.append(f"Row {row_num}: row_type {row_type_raw!r} not in {sorted(ROW_TYPES)}")
+            continue
+
+        counts[row_type] = counts.get(row_type, 0) + 1
+
+        # blank is the only row type left with no legitimate reason to carry a stop —
+        # day_header and day_end can, and now do (see below); a blank row with a Plan
+        # is still genuinely suspicious.
+        if row_type == "blank":
+            plan_val = cell(row, "plan")
+            if plan_val:
+                warnings.append(
+                    f"Row {row_num}: row_type={row_type} but Plan is non-empty "
+                    f"({plan_val!r}) — possible misclassification"
+                )
+            continue
+
+        if row_type == "day_header":
+            flush_day()
+            seq = 0
+            day_field = cell(row, "day")
+            m = DAY_RE.search(day_field)
+            if not m:
+                errors.append(f"Row {row_num}, column 'Day': {day_field!r} doesn't match 'Day N'")
+                continue
+            day_num = int(m.group(1))
+
+            date_raw = cell(row, "date")
+            date_val = None
+            if not date_raw:
+                errors.append(f"Row {row_num}, column 'Date': day_header missing Date")
+            else:
+                date_val = parse_date(date_raw)
+                if date_val is None:
+                    errors.append(
+                        f"Row {row_num}, column 'Date': {date_raw!r} is not a valid date "
+                        "(expected YYYY-MM-DD or D/M/YYYY)"
+                    )
+
+            zone = cell(row, "zone")
+            if zone and not valid_timezone(zone):
+                errors.append(f"Row {row_num}, column 'Zone': {zone!r} is not a valid IANA timezone")
+
+            anchor_raw = cell(row, "fixed_time")
+            anchor = None
+            if anchor_raw:
+                anchor = parse_time(anchor_raw)
+                if anchor is None:
+                    errors.append(f"Row {row_num}, column 'fixed_time': {anchor_raw!r} is not a valid HH:MM time")
+
+            current_day = {
+                "day": day_num,
+                "date": date_val or "",
+                "start_location": cell(row, "location") or None,
+                "end_location": None,
+                "timezone": zone or None,
+                "anchor_time": anchor or None,
+                "lodging": None,
+                "stops": [],
+            }
+
+            # Some day_header rows also carry a real stop (e.g. a sunrise shoot
+            # timed to the day's own fixed_time) — Location holds the start
+            # location, Plan holds the stop. Read it exactly like a stop row.
+            if cell(row, "plan"):
+                seq += 1
+                first_stop = parse_stop_content(row, row_num)
+                if first_stop is not None:
+                    current_day["stops"].append(first_stop)
+            continue
+
+        if current_day is None:
+            errors.append(f"Row {row_num}: {row_type} row appears before any day_header")
+            continue
+
+        stray_date = cell(row, "date")
+        if stray_date:
+            warnings.append(f"Row {row_num}: unexpected value in Date column: {stray_date!r} (ignored)")
+
+        if row_type == "day_end":
+            current_day["end_location"] = cell(row, "location") or None
+            if not current_day["timezone"]:
+                zone = cell(row, "zone")
+                if zone:
+                    current_day["timezone"] = zone
+
+            # Same dual-purpose pattern as day_header, at the end of the day.
+            if cell(row, "plan"):
+                seq += 1
+                last_stop = parse_stop_content(row, row_num)
+                if last_stop is not None:
+                    current_day["stops"].append(last_stop)
+            continue
+
+        if row_type == "lodging":
+            name = cell(row, "plan")
+            if not name:
+                errors.append(f"Row {row_num}, column 'Plan': lodging row missing hotel name")
+            check_in_raw = cell(row, "fixed_time")
+            check_in = None
+            if check_in_raw:
+                check_in = parse_time(check_in_raw)
+                if check_in is None:
+                    errors.append(
+                        f"Row {row_num}, column 'fixed_time': {check_in_raw!r} is not a valid HH:MM time"
+                    )
+            current_day["lodging"] = Lodging(
+                name=name or "",
+                check_in=check_in,
+                notes=cell(row, "notes") or None,
+            )
+            continue
+
+        # row_type == "stop"
+        seq += 1
+        new_stop = parse_stop_content(row, row_num)
+        if new_stop is not None:
+            current_day["stops"].append(new_stop)
 
     flush_day()
 
