@@ -158,7 +158,11 @@ corruption. Making it explicit costs one column and breaks no formulas.
 | `day_end` | Terminal row | `Location` = end location |
 | `blank` | Spacer | — |
 
-Rows with `row_type` empty are **rejected**, not guessed at.
+An empty `row_type` is a **warning**, and the row is skipped — not guessed at, and not
+a build failure. This is deliberate: it's what lets the sheet be migrated
+incrementally, tagging one range of days at a time rather than all ~276 rows at once. A
+`row_type` that's present but not one of the values above **is** a build failure — a
+typo shouldn't be silently treated the same as "not yet migrated."
 
 ### `day_offset`
 
@@ -398,7 +402,7 @@ loud failure is the point.
 
 **Errors (build fails):**
 - A required header missing from the sheet
-- `row_type` missing or not in the enum
+- `row_type` present but not in the enum (empty is a warning, not an error — see §2)
 - A `stop` row missing `Plan`, `Travel`, `Fun Time`, or resolvable coordinates
 - `kind` present but not in the enum (blank is fine — defaults to `poi`)
 - `timing` present but not in the enum (blank is fine — defaults to `floating`)
@@ -411,6 +415,7 @@ loud failure is the point.
 - A day with no constraint — nothing `fixed` and no `lodging` check-in
 
 **Warnings (build passes, logged to the report):**
+- `row_type` empty — row skipped, not yet migrated
 - A stop with `Fun Time = 0` and `timing = floating`
 - A day whose cascade already overruns its own constraints as planned
 - A document whose date matches no day
