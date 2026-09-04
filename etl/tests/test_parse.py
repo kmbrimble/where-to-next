@@ -408,24 +408,23 @@ def test_invalid_kind_or_timing_value_still_errors(tmp_path):
     assert any("kind" in e and "bogus" in e for e in result.errors)
 
 
-@pytest.mark.parametrize("row_type", ["day_end", "blank"])
-def test_plan_on_structural_row_is_a_misclassification_warning(tmp_path, row_type):
+def test_plan_on_blank_row_is_a_misclassification_warning(tmp_path):
     rows = happy_path_rows()
-    rows.append(r(row_type=row_type, Plan="Stray stop title"))
+    rows.append(r(row_type="blank", Plan="Stray stop title"))
     path = write_csv(tmp_path, rows)
     result = parse_rows(CsvLoader(path))
 
     assert result.trip is not None
     assert result.errors == []
     assert any(
-        f"row_type={row_type} but Plan is non-empty" in w and "Stray stop title" in w
+        "row_type=blank but Plan is non-empty" in w and "Stray stop title" in w
         for w in result.warnings
     )
 
 
-def test_plan_on_stop_or_lodging_row_does_not_warn(tmp_path):
-    # sanity check: the misclassification warning is scoped to structural row types
-    # only — stop/lodging/day_header legitimately carry Plan content.
+def test_plan_on_stop_lodging_or_day_header_row_does_not_warn(tmp_path):
+    # sanity check: the misclassification warning is scoped to blank only now —
+    # stop/lodging/day_header/day_end all legitimately carry Plan content.
     rows = happy_path_rows()
     path = write_csv(tmp_path, rows)
     result = parse_rows(CsvLoader(path))
@@ -494,3 +493,80 @@ def test_day_leg_uses_single_location_when_start_equals_end(tmp_path):
 
     assert result.trip is not None
     assert result.trip.days[0].leg == "Vancouver"
+
+
+def test_day_header_with_plan_emits_a_first_stop(tmp_path):
+    # Real pattern from the live sheet (row 90): a day_header row's single fixed_time
+    # cell serves as both the day's anchor_time and the embedded stop's fixed_time —
+    # they're the same moment (the day begins with this fixed-time stop), not two
+    # different values competing for one cell.
+    rows = [
+        r(row_type="day_header", Day="Day 1", Date="2026-09-27", Location="Vancouver",
+          Zone="America/Vancouver", fixed_time="06:40", timing="fixed",
+          Plan="Skyline Viewpoint", Travel="0:10", **{"Fun Time": "1:15"}, How="drive"),
+        lodging("Listel Vancouver", "America/Vancouver"),
+        day_end("Vancouver"),
+    ]
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    day = result.trip.days[0]
+    assert day.anchor_time == "06:40"
+    assert len(day.stops) == 1
+    first_stop = day.stops[0]
+    assert first_stop.title == "Skyline Viewpoint"
+    assert first_stop.seq == 1
+    assert first_stop.timing == "fixed"
+    assert first_stop.fixed_time == "06:40"
+    assert first_stop.travel_minutes == 10
+    assert first_stop.dwell_minutes == 75
+
+
+def test_day_header_with_empty_plan_behaves_as_before(tmp_path):
+    rows = happy_path_rows()
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is not None
+    # day_header row itself contributes no stop when Plan is empty
+    assert result.trip.days[0].stops[0].title == "Stanley Park"
+
+
+def test_day_end_with_plan_emits_a_final_stop(tmp_path):
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        stop("Stanley Park", "0:20", "1:00", "America/Vancouver",
+             timing="fixed", fixed_time="09:00"),
+        r(row_type="day_end", Location="Whistler", Plan="Arrive Whistler Village",
+          Travel="0:30", **{"Fun Time": "0:00"}, Zone="America/Vancouver",
+          timing="floating", kind="poi", How="drive"),
+    ]
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.errors == []
+    assert result.trip is not None
+    day = result.trip.days[0]
+    assert day.end_location == "Whistler"
+    assert len(day.stops) == 2
+    assert day.stops[-1].title == "Arrive Whistler Village"
+    assert day.stops[-1].seq == 2
+
+
+def test_day_end_with_incomplete_plan_errors_like_any_stop(tmp_path):
+    # Once day_end carries a Plan it's held to the same stop-shaped requirements as
+    # any other stop row — Travel/Fun Time/Zone missing is now a real error, not
+    # silently ignored.
+    rows = [
+        day_header("Day 1", "2026-09-27", "Vancouver", "America/Vancouver"),
+        stop("Stanley Park", "0:20", "1:00", "America/Vancouver",
+             timing="fixed", fixed_time="09:00"),
+        r(row_type="day_end", Location="Whistler", Plan="Arrive Whistler Village"),
+    ]
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("stop missing/invalid required field(s)" in e for e in result.errors)

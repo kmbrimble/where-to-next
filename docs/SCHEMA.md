@@ -157,10 +157,10 @@ corruption. Making it explicit costs one column and breaks no formulas.
 
 | Value | Meaning | Key columns |
 |---|---|---|
-| `day_header` | Start of a day | `Day`, `Date`, `Location` = start location |
+| `day_header` | Start of a day, and optionally its first stop | `Day`, `Date`, `Location` = start location; `Plan` + the usual stop columns if present |
 | `stop` | An itinerary item | `Travel`, `Fun Time`, `Plan`, `Zone` + new columns |
 | `lodging` | Where you sleep that night | `Plan` = hotel name |
-| `day_end` | Terminal row | `Location` = end location |
+| `day_end` | Terminal row, and optionally its last stop | `Location` = end location; `Plan` + the usual stop columns if present |
 | `blank` | Spacer | — |
 
 An empty `row_type` is a **warning**, and the row is skipped — not guessed at, and not
@@ -176,6 +176,19 @@ drive duration), so a row type that treated the row as pure structure was silent
 dropping real data. Those rows are retyped `stop` instead; `Location` on a `stop` row
 is simply ignored, whatever it contains. `day.leg` is now **derived**, not read: see
 below.
+
+**`day_header` and `day_end` are dual-purpose, for the same reason.** Some days have a
+real stop timed to the start or end of the day (e.g. a sunrise shoot on the
+`day_header` row itself) — the sheet packs the day-structure columns and the stop
+columns into one row rather than adding a separate row. When `Plan` is non-empty on
+either, the row is read as a normal `stop` **in addition to** its structural role: the
+`day_header` stop becomes the day's first stop, the `day_end` stop becomes its last.
+The day's `fixed_time` cell and the embedded stop's `fixed_time` are the same cell,
+read once — they aren't two competing values, because on these rows they're the same
+moment (the day begins or ends exactly when that stop happens). A `day_header` or
+`day_end` row with an empty `Plan` behaves exactly as before. `blank` rows still warn
+on a non-empty `Plan` — unlike the other structural types, a `blank` row was never
+meant to carry anything.
 
 ### `day_offset`
 
@@ -440,9 +453,9 @@ loud failure is the point.
   on a day having a constraint doesn't exist yet either. Revert to an error once both
   of those land.
 - A document whose date matches no day
-- A `day_end` or `blank` row with non-empty `Plan` — these row types are structural
-  and shouldn't carry a stop title, so content there usually means `row_type` was
-  mistyped.
+- A `blank` row with non-empty `Plan` — `blank` is the only row type left with no
+  legitimate reason to carry a stop, so content there usually means `row_type` was
+  mistyped. (`day_header` and `day_end` legitimately carry `Plan` now — see §2.)
 - `address_source = geocoded` — flags every stop whose pin was inferred rather than given
 - A geocode returning `APPROXIMATE` or `GEOMETRIC_CENTER` precision
 
