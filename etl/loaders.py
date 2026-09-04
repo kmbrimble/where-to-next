@@ -13,6 +13,8 @@ from typing import Callable
 
 RowSource = Callable[[], list[list[str]]]
 
+DEFAULT_WORKSHEET_NAME = "Itinerary v1"
+
 
 def CsvLoader(path: str | Path) -> RowSource:
     def load() -> list[list[str]]:
@@ -22,14 +24,23 @@ def CsvLoader(path: str | Path) -> RowSource:
     return load
 
 
-def SheetsLoader(sheet_id: str | None = None) -> RowSource:
+def SheetsLoader(sheet_id: str | None = None, worksheet_name: str | None = None) -> RowSource:
     def load() -> list[list[str]]:
         import gspread
 
         sid = sheet_id or os.environ["GOOGLE_SHEET_ID"]
+        name = worksheet_name or os.environ.get("WORKSHEET_NAME") or DEFAULT_WORKSHEET_NAME
         key = json.loads(os.environ["GOOGLE_SHEETS_SA_KEY"])
         client = gspread.service_account_from_dict(key)
-        sheet = client.open_by_key(sid).worksheet("Itinerary")
+        spreadsheet = client.open_by_key(sid)
+        try:
+            sheet = spreadsheet.worksheet(name)
+        except gspread.exceptions.WorksheetNotFound:
+            available = [ws.title for ws in spreadsheet.worksheets()]
+            raise ValueError(
+                f"Worksheet {name!r} not found in spreadsheet {sid!r}. "
+                f"Available worksheets: {available}"
+            ) from None
         return sheet.get_all_values()
 
     return load
