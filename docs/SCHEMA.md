@@ -73,17 +73,23 @@ added anywhere — position is irrelevant.
 
 | Header | Type | Required | Notes |
 |---|---|---|---|
-| `row_type` | enum | ✅ all rows | See below |
-| `kind` | enum | stops | `poi`, `meal`, `activity`, `lodging`, `flight`, `transfer` |
+| `row_type` | enum | ✅ all rows | See below — the one classification column that must be explicit, never inferred |
+| `kind` | enum | optional | `poi`, `meal`, `activity`, `lodging`, `flight`, `transfer`. **Default `poi`.** Tag only the exceptions |
 | `lat` | number | — | **ETL-written.** Resolved from `Address` |
 | `lng` | number | — | **ETL-written.** Resolved from `Address` |
 | `place_id` | text | — | **ETL-written** where available |
-| `timing` | enum | ✅ stops | `fixed` or `floating` |
+| `timing` | enum | optional | `fixed` or `floating`. **Default `floating`.** Tag only the genuinely fixed stops — a handful per day, not all ~276 |
 | `fixed_time` | time | if `fixed` | Local wall-clock, e.g. `16:30` |
 | `arrive_before` | duration | optional | Check-in lead time, e.g. `00:30` |
 | `daylight_required` | bool | optional | Treats sunset as a constraint |
 | `day_offset` | integer | optional | Calendar days past the day-header date. Default 0 |
 | `documents` | text | optional | Comma-separated filename stems, overrides auto-match |
+
+`row_type` stays mandatory and explicit: it's the column that stops row position from
+silently determining meaning, which is the exact corruption this migration exists to
+fix. `kind` and `timing` don't carry that risk — an un-tagged stop defaulting to
+`poi`/`floating` is a display nicety and a scheduling default, not a data-corruption
+vector — so they're optional and only the exceptions need hand-tagging.
 
 ### `Address` resolution
 
@@ -393,7 +399,9 @@ loud failure is the point.
 **Errors (build fails):**
 - A required header missing from the sheet
 - `row_type` missing or not in the enum
-- A `stop` row missing `Plan`, `Travel`, `Fun Time`, `timing`, or resolvable coordinates
+- A `stop` row missing `Plan`, `Travel`, `Fun Time`, or resolvable coordinates
+- `kind` present but not in the enum (blank is fine — defaults to `poi`)
+- `timing` present but not in the enum (blank is fine — defaults to `floating`)
 - `timing = fixed` without `fixed_time`
 - `How` not in the enum
 - `Travel` or `Fun Time` not parseable as a duration (catches text like `1.00pm`, `Zoo??`)
@@ -431,7 +439,9 @@ One-off, before the ETL can run. Known damage in the current workbook:
 
 - [x] Convert to a native Google Sheet — done, XLOOKUP formulas verified intact
 - [x] Add `Address` and `How` columns
-- [ ] Add the remaining new columns and the `Checklist` tab
+- [ ] Add the remaining new columns and the `Checklist` tab. `kind` and `timing` are
+      optional — leave them blank except for the exceptions (a non-`poi` kind, or a
+      genuinely `fixed` stop); the ETL defaults the rest to `poi`/`floating`
 - [ ] Replace shortcode values in the `Zone` column with IANA names, and update column A
       of the `Time Zones` tab to match so the XLOOKUP formulas continue to resolve
 - [ ] Populate `row_type` for every row — **do this first**; the phantom rows and the
