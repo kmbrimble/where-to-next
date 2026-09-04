@@ -72,10 +72,10 @@ checking the hashed asset name matches a local `npm run build`.
 - **Columns are matched by normalised header name, never by position** —
   `normalize_header()` and the `index` dict in `etl/parse.py`. Positional indexing is the
   exact corruption this migration exists to remove.
-- **Empty `row_type` is a warning + skip, not an error** (`etl/parse.py`).
-  `docs/SCHEMA.md` §2 still says "rejected"; the code deliberately overrides that so the
-  sheet can be migrated incrementally. The code is right and the doc is stale — don't
-  "fix" the code to match it.
+- **Empty `row_type` is a warning + skip; present-but-invalid is a hard error**
+  (`etl/parse.py`, `docs/SCHEMA.md` §2 and §7). Skipping is what lets the sheet be
+  migrated one range of days at a time rather than all ~276 rows at once. Tightening the
+  empty case to an error would strand the migration.
 - **`TripMeta.generated_at` stays null.** It's declared in `etl/models.py` and set by
   nothing. Populating it with `now()` breaks
   `test_deterministic_output_same_bytes_twice` and churns the deploy on every run.
