@@ -2,9 +2,9 @@
 
 Column resolution is by header name (normalised: lowercased, trimmed, whitespace
 collapsed), never by position — see docs/SCHEMA.md section 1. Row classification is
-by row_type; an empty row_type is a warning and the row is skipped (docs/SCHEMA.md
-section 2 says reject, but the task explicitly overrides that to warn+skip so the
-sheet can be migrated incrementally — see PR description).
+by row_type; an empty row_type is a warning and the row is skipped, per docs/SCHEMA.md
+section 2, so the sheet can be migrated incrementally. A row_type that's present but
+not in the enum is a hard error.
 """
 from __future__ import annotations
 
