@@ -272,6 +272,39 @@ def test_fixed_timing_without_fixed_time_is_an_error(tmp_path):
     assert any("fixed_time" in e and "required when timing=fixed" in e for e in result.errors)
 
 
+def test_invalid_row_type_value_is_a_hard_error_unlike_empty(tmp_path):
+    rows = happy_path_rows()
+    rows.append(r(row_type="stopp", Plan="Typo'd row_type"))
+    path = write_csv(tmp_path, rows)
+    result = parse_rows(CsvLoader(path))
+
+    assert result.trip is None
+    assert any("stopp" in e for e in result.errors)
+    assert result.skipped == 0  # not treated as skip-worthy like an empty row_type
+
+
+def test_mix_of_marked_and_unmarked_rows_exits_zero_with_only_marked_rows(tmp_path):
+    # Days 0-10 are marked up with row_type; everything after is not, yet — the
+    # incremental-migration case docs/SCHEMA.md and the task both call out.
+    marked = happy_path_rows()
+    unmarked_days = [
+        r(row_type="", Day="Day 3", Date="2026-09-29", Location="Revelstoke"),
+        r(row_type="", Plan="Some unmarked future stop", Travel="0:30", **{"Fun Time": "1:00"}),
+        r(row_type="", Location="Revelstoke"),
+    ]
+    path = write_csv(tmp_path, marked + unmarked_days)
+
+    exit_code = main(["--csv", str(path), "--out-dir", str(tmp_path / "out")])
+    assert exit_code == 0
+
+    trip = json.loads((tmp_path / "out" / "trip.json").read_text())
+    assert [d["day"] for d in trip["days"]] == [1, 2]
+
+    report = (tmp_path / "out" / "report.md").read_text()
+    assert "Errors (0)" in report
+    assert report.count("empty row_type — skipped") == 3
+
+
 def test_stray_date_on_non_header_row_is_a_warning(tmp_path):
     rows = happy_path_rows()
     rows[3] = r(row_type="lodging", Plan="Listel Vancouver", Zone="America/Vancouver",

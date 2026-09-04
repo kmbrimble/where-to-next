@@ -17,6 +17,11 @@ def main(argv: list[str] | None = None) -> int:
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--csv", type=Path, help="Path to a local CSV export of the Itinerary sheet")
     source_group.add_argument("--sheet-id", help="Google Sheet ID (reads GOOGLE_SHEETS_SA_KEY from env)")
+    parser.add_argument(
+        "--worksheet",
+        help="Worksheet/tab name to read (Sheets source only). "
+        "Falls back to the WORKSHEET_NAME env var, then 'Itinerary v1'.",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("etl"), help="Where to write trip.json and report.md")
     args = parser.parse_args(argv)
 
@@ -24,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
         source = CsvLoader(args.csv)
         revision = hashlib.sha256(args.csv.read_bytes()).hexdigest()
     else:
-        source = SheetsLoader(args.sheet_id)
+        source = SheetsLoader(args.sheet_id, args.worksheet)
         revision = None
 
     result = parse_rows(source)
