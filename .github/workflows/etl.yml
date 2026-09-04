@@ -1,0 +1,31 @@
+name: ETL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r etl/requirements.txt
+
+      - run: python -m pytest etl -q
+
+      - name: Run ETL against the Google Sheet
+        env:
+          GOOGLE_SHEET_ID: ${{ vars.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEETS_SA_KEY: ${{ secrets.GOOGLE_SHEETS_SA_KEY }}
+        run: python -m etl --sheet-id "$GOOGLE_SHEET_ID" --out-dir etl-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: etl-output
+          path: |
+            etl-out/trip.json
+            etl-out/report.md

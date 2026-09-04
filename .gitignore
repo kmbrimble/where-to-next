@@ -16,6 +16,17 @@ playwright-report
 dev-dist
 .wrangler
 
+# Python / ETL
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+etl.egg-info/
+.env
+.env.*
+*service-account*.json
+*credentials*.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
