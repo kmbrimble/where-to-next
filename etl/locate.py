@@ -148,3 +148,131 @@ def decide_resolution(
                 warning="resolved from a Links URL, not Address — needs eyeballing",
             )
     return ResolutionPlan(action="unresolvable")
+
+
+# Approximate (lat_min, lat_max, lng_min, lng_max) per IANA zone the trip touches.
+# Generous on purpose — this catches a mis-pasted coordinate, not a precision audit.
+# An unknown zone skips the check rather than erroring (see in_bounding_box).
+TIMEZONE_BOUNDING_BOXES = {
+    "Australia/Brisbane": (-29.0, -9.0, 138.0, 154.0),
+    "Pacific/Auckland": (-47.5, -34.0, 166.0, 179.0),
+    "America/Vancouver": (48.0, 60.0, -139.0, -114.0),
+    "America/Edmonton": (48.0, 60.0, -120.0, -110.0),
+    "America/Phoenix": (31.0, 37.0, -114.8, -109.0),
+    "America/Los_Angeles": (32.0, 42.0, -124.5, -114.0),
+}
+
+LOW_PRECISION_TYPES = {"APPROXIMATE", "GEOMETRIC_CENTER"}
+
+
+def in_bounding_box(lat: float, lng: float, timezone: str) -> bool | None:
+    """True/False if timezone has a known box, None if the zone is unknown (skip)."""
+    box = TIMEZONE_BOUNDING_BOXES.get(timezone)
+    if box is None:
+        return None
+    lat_min, lat_max, lng_min, lng_max = box
+    return lat_min <= lat <= lat_max and lng_min <= lng <= lng_max
+
+
+@dataclass
+class LocationReport:
+    counts: dict
+    projected_calls: int
+    actual_calls: int
+    eyeball: list
+    would_write: list
+    errors: list
+    warnings: list
+
+
+def resolve_locations(trip, *, live: bool, client=None, budget=None) -> LocationReport:
+    """Walk every stop, decide via decide_resolution(), and either record what WOULD
+    happen (dry run — no mutation, no network) or actually resolve it (--live).
+    """
+    counts = {"coordinates": 0, "plus_code": 0, "geocoded": 0, "maps_link": 0, "cached": 0, "unresolved": 0}
+    eyeball: list[str] = []
+    would_write: list[str] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    to_geocode: list[tuple] = []
+
+    for day in trip.days:
+        for stop in day.stops:
+            plan = decide_resolution(stop.address, stop.links, stop.lat, stop.lng, stop.place_id)
+
+            if plan.action == "use_cache":
+                counts["cached"] += 1
+
+            elif plan.action in ("resolve_coordinates", "overwrite_cache_coordinates"):
+                counts["coordinates"] += 1
+                if plan.warning:
+                    warnings.append(f"Row {stop.row_num}: {plan.warning}")
+                box_ok = in_bounding_box(plan.lat, plan.lng, stop.timezone)
+                if box_ok is False:
+                    errors.append(
+                        f"Row {stop.row_num}: resolved coordinates ({plan.lat}, {plan.lng}) "
+                        f"outside the {stop.timezone} bounding box"
+                    )
+                else:
+                    would_write.append(
+                        f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=coordinates"
+                    )
+                    if live:
+                        stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "coordinates"
+
+            elif plan.action == "resolve_plus_code":
+                counts["plus_code"] += 1
+                to_geocode.append((stop, plan, "plus_code"))
+
+            elif plan.action == "resolve_address":
+                counts["geocoded"] += 1
+                to_geocode.append((stop, plan, "geocoded"))
+                eyeball.append(f"Row {stop.row_num}: {stop.title!r} geocoded from address — needs eyeballing")
+
+            elif plan.action == "resolve_maps_link":
+                counts["maps_link"] += 1
+                eyeball.append(f"Row {stop.row_num}: {stop.title!r} resolved from Links — needs eyeballing")
+                would_write.append(
+                    f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=maps_link"
+                )
+                if live:
+                    stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "maps_link"
+
+            else:  # unresolvable
+                counts["unresolved"] += 1
+                # A warning, not an error — matches the rest of this ETL's incremental-
+                # migration stance (empty row_type, missing kind/timing, etc.): a stop
+                # not yet given an Address isn't corruption, it's just not done yet.
+                warnings.append(f"Row {stop.row_num}: {stop.title!r} has no resolvable Address or Links coordinates")
+
+    projected_calls = len(to_geocode)
+
+    if not live:
+        for stop, plan, category in to_geocode:
+            would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
+        return LocationReport(counts, projected_calls, 0, eyeball, would_write, errors, warnings)
+
+    if budget is not None:
+        budget.check(projected_calls)
+
+    for stop, plan, category in to_geocode:
+        result = client.geocode(plan.query)
+        if result is None:
+            errors.append(f"Row {stop.row_num}: {stop.title!r} — geocode returned no results for {plan.query!r}")
+            continue
+        stop.lat, stop.lng, stop.place_id, stop.resolved_from = result.lat, result.lng, result.place_id, category
+        box_ok = in_bounding_box(result.lat, result.lng, stop.timezone)
+        if box_ok is False:
+            errors.append(
+                f"Row {stop.row_num}: resolved coordinates ({result.lat}, {result.lng}) "
+                f"outside the {stop.timezone} bounding box"
+            )
+        if result.location_type in LOW_PRECISION_TYPES:
+            warnings.append(f"Row {stop.row_num}: geocode precision {result.location_type} — needs eyeballing")
+            eyeball.append(f"Row {stop.row_num}: {stop.title!r} — {result.location_type} precision")
+        would_write.append(
+            f"Row {stop.row_num}: id={stop.id} lat={result.lat} lng={result.lng} resolved_from={category}"
+        )
+
+    actual_calls = client.call_count if client is not None else 0
+    return LocationReport(counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings)

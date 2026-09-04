@@ -8,13 +8,15 @@ import os
 import sys
 from pathlib import Path
 
+from .geocode import GeocodeClient, RequestBudget
 from .loaders import CsvLoader, SheetsLoader
+from .locate import resolve_locations
 from .parse import parse_rows
 from .report import render_report
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="where-to-next ETL: stage 1 (parse + validate, no network)")
+    parser = argparse.ArgumentParser(description="where-to-next ETL: stage 1 (parse + validate) + stage 2 (location)")
     source_group = parser.add_mutually_exclusive_group()
     source_group.add_argument("--csv", type=Path, help="Path to a local CSV export of the Itinerary sheet")
     source_group.add_argument(
@@ -26,6 +28,15 @@ def main(argv: list[str] | None = None) -> int:
         "Falls back to the WORKSHEET_NAME env var, then 'Itinerary v1'.",
     )
     parser.add_argument("--out-dir", type=Path, default=Path("etl"), help="Where to write trip.json and report.md")
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Actually geocode and (in a later piece) write back to the sheet. "
+        "Default is dry run: zero network calls, zero sheet writes.",
+    )
+    parser.add_argument(
+        "--allow-bulk", action="store_true",
+        help="Lift the 300-geocoding-request safety cap for this run.",
+    )
     args = parser.parse_args(argv)
 
     sheet_id = args.sheet_id or os.environ.get("GOOGLE_SHEET_ID")
@@ -44,11 +55,31 @@ def main(argv: list[str] | None = None) -> int:
     if result.trip is not None and revision is not None:
         result.trip.trip.source_revision = revision
 
+    location = None
+    if result.trip is not None:
+        client = None
+        budget = None
+        if args.live:
+            api_key = os.environ.get("GOOGLE_GEOCODING_KEY")
+            if not api_key:
+                parser.error("--live requires GOOGLE_GEOCODING_KEY to be set")
+            client = GeocodeClient(api_key=api_key)
+            budget = RequestBudget(allow_bulk=args.allow_bulk)
+
+        try:
+            location = resolve_locations(result.trip, live=args.live, client=client, budget=budget)
+        except RuntimeError as e:
+            result.errors.append(str(e))
+            location = None
+        else:
+            result.errors.extend(location.errors)
+            result.warnings.extend(location.warnings)
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
     report_path = args.out_dir / "report.md"
-    report_path.write_text(render_report(result), encoding="utf-8")
+    report_path.write_text(render_report(result, location, live=args.live), encoding="utf-8")
 
-    if result.trip is None:
+    if result.trip is None or result.errors:
         print(f"ETL failed with {len(result.errors)} error(s); see {report_path}", file=sys.stderr)
         return 1
 
