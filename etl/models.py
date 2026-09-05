@@ -27,6 +27,7 @@ class Leg(BaseModel):
     how: str
     distance_m: int | None = None
     duration_s: int | None = None
+    api_duration_s: int | None = None
     polyline: str | None = None
 
     model_config = {"populate_by_name": True}
