@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from .geocode import GeocodeClient, RequestBudget
+from .geocode import GeocodeClient, RequestBudget, ShortLinkResolver
 from .loaders import CsvLoader, SheetsLoader, get_worksheet
 from .locate import resolve_locations
 from .parse import parse_rows
@@ -69,16 +69,19 @@ def main(argv: list[str] | None = None) -> int:
     if result.trip is not None:
         client = None
         budget = None
+        short_link_resolver = None
         if args.live:
             api_key = os.environ.get("GOOGLE_GEOCODING_KEY")
             if not api_key:
                 parser.error("--live requires GOOGLE_GEOCODING_KEY to be set")
             client = GeocodeClient(api_key=api_key)
             budget = RequestBudget(allow_bulk=args.allow_bulk)
+            short_link_resolver = ShortLinkResolver()
 
         try:
             location = resolve_locations(
                 result.trip, live=args.live, client=client, budget=budget, reverify=args.reverify,
+                short_link_resolver=short_link_resolver,
             )
         except RuntimeError as e:
             result.errors.append(str(e))
