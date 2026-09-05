@@ -359,6 +359,18 @@ Parser notes:
 **The convention is load-bearing.** One of the 27 files was already four days wrong and
 named after the wrong hotel (`20261002 Hotel - Forest Lodge.pdf` was in fact Forest Park
 Hotel, Jasper, 6–7 Oct). A mistyped date silently attaches a booking to the wrong day.
+
+**The document `id` is a slug, never the raw filename.** The raw Drive filename (spaces,
+parens, commas, a literal `#`) is not URL-safe, and `#` is a URL fragment delimiter — a
+browser silently drops everything after it, 404ing the document. The id is derived as
+`<yyyymmdd>-<type>-<up to 4 significant title words>`, ASCII-lowercased, hyphen-separated
+(`document_slug()` in `etl/documents.py`), and is used identically as the trip.json
+document `id`, the R2 object key, and the `/docs/<id>.pdf` url — all three always agree.
+It's deterministic (same file → same slug every run) so idempotent uploads and cached
+client references survive a re-run. Two files that slug identically get a short
+deterministic disambiguator suffixed (derived from each file's own original filename, not
+processing order) and a warning naming both. `title` stays the human-readable text from
+the filename — only the id/key/url are slugged.
 Spot-check the remaining files against their contents before trusting auto-match.
 
 At build time the ETL copies all PDFs into the private `where-to-next-docs` R2 bucket

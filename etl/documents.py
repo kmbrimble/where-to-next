@@ -12,6 +12,7 @@ Usage: python -m etl.documents --trip-json etl/trip.json [--live]
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,39 @@ from pathlib import Path
 from typing import Callable
 
 from .models import Document, Trip
+
+# Common short words dropped when shortening a title to a slug — keeps the
+# slug's word budget spent on the words that actually distinguish one
+# document from another (see document_slug()).
+SLUG_STOPWORDS = {"a", "an", "and", "the", "of", "for", "to", "with", "your", "on", "in", "at", "by", "from"}
+SLUG_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_words(text: str) -> list[str]:
+    ascii_text = text.encode("ascii", "ignore").decode("ascii").lower()
+    return [w for w in SLUG_SPLIT_RE.split(ascii_text) if w]
+
+
+def document_slug(start_date: str | None, doc_type: str, title: str, max_title_words: int = 4) -> str:
+    """Stable, URL-safe id: <yyyymmdd>-<type>-<shortened title>, ASCII lowercase,
+    hyphen-separated. This is used as the trip.json document id, the R2 object
+    key, and the /docs/<slug>.pdf url — a raw Drive filename (spaces, parens, a
+    literal '#') is not URL-safe and a '#' truncates the url at a browser's URL
+    fragment delimiter, which is the bug this replaces."""
+    parts = []
+    if start_date:
+        parts.append(start_date.replace("-", ""))
+    parts.extend(_slug_words(doc_type))
+    title_words = [w for w in _slug_words(title) if w not in SLUG_STOPWORDS][:max_title_words]
+    parts.extend(title_words or ["doc"])
+    return "-".join(parts)
+
+
+def _disambiguator(original_stem: str) -> str:
+    """Short, deterministic suffix for a slug collision — derived from the
+    original filename alone (not from processing order), so which file gets
+    which suffix never changes between runs regardless of Drive listing order."""
+    return hashlib.sha1(original_stem.encode()).hexdigest()[:6]
 
 DRIVE_FOLDER_ID = "12Yt0lhoraEJnv5UBJf614r6mUS3MtvbF"
 R2_BUCKET = "where-to-next-docs"
@@ -214,6 +248,7 @@ class DocumentsReport:
     skipped: int = 0
     unmatched: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    old_keys: list[str] = field(default_factory=list)  # pre-slug filename keys, now orphaned in R2
 
 
 def compute_documents(trip, *, live: bool, drive: DriveClient, r2: R2Client | None = None) -> DocumentsReport:
@@ -226,6 +261,10 @@ def compute_documents(trip, *, live: bool, drive: DriveClient, r2: R2Client | No
             for stem in stop.documents or []:
                 stops_by_stem.setdefault(stem, []).append(day)
 
+    # Pass 1: match each Drive file to its target day(s) — matching still keys
+    # off the raw filename stem (explicit `documents` column values are typed
+    # against the actual filename, not a slug).
+    candidates = []
     for f in drive.list_pdfs():
         stem = f.name[:-4]  # strip ".pdf" — list_pdfs already filtered to .pdf
         parsed = parse_filename(stem)
@@ -252,14 +291,35 @@ def compute_documents(trip, *, live: bool, drive: DriveClient, r2: R2Client | No
             report.unmatched.append(f.name)
             continue
 
-        document = Document(id=stem, type=doc_type, title=title, url=f"/docs/{stem}.pdf")
+        base_slug = document_slug(parsed.start_date if parsed else None, doc_type, title)
+        candidates.append((f, stem, doc_type, title, target_days, base_slug))
+
+    # Pass 2: resolve slug collisions. The disambiguator is derived from each
+    # file's own original stem, so which colliding file gets which final slug
+    # never depends on Drive's listing order — only on which files exist.
+    by_base_slug: dict[str, list] = {}
+    for c in candidates:
+        by_base_slug.setdefault(c[5], []).append(c)
+
+    for base_slug, group in by_base_slug.items():
+        if len(group) <= 1:
+            continue
+        names = ", ".join(c[0].name for c in group)
+        report.warnings.append(f"slug {base_slug!r} collided between {len(group)} files ({names}) — disambiguated")
+
+    # Pass 3: build documents and (optionally) upload.
+    for f, stem, doc_type, title, target_days, base_slug in candidates:
+        slug = base_slug if len(by_base_slug[base_slug]) == 1 else f"{base_slug}-{_disambiguator(stem)}"
+
+        document = Document(id=slug, type=doc_type, title=title, url=f"/docs/{slug}.pdf")
         for day in target_days:
             if not any(d.id == document.id for d in day.documents):
                 day.documents.append(document)
         report.matched += 1
+        report.old_keys.append(f.name)
 
         if live:
-            outcome = r2.sync(stem + ".pdf", f.size, f.md5, lambda file_id=f.id: drive.download(file_id))
+            outcome = r2.sync(f"{slug}.pdf", f.size, f.md5, lambda file_id=f.id: drive.download(file_id))
             if outcome == "uploaded":
                 report.uploaded += 1
             else:
@@ -291,6 +351,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"uploaded {report.uploaded}, skipped (already current in R2) {report.skipped}")
     for w in report.warnings:
         print(f"WARNING: {w}")
+    if report.old_keys:
+        print(f"Old (pre-slug) R2 keys, now orphaned if this bucket had prior uploads ({len(report.old_keys)}):")
+        for k in report.old_keys:
+            print(f"  {k}")
 
     args.trip_json.write_text(
         json.dumps(trip.model_dump(mode="json", by_alias=True), sort_keys=True, indent=2, ensure_ascii=False) + "\n",
