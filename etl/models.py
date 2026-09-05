@@ -72,6 +72,8 @@ class Day(BaseModel):
     anchor_time: str | None = None
     sunrise: str | None = None
     sunset: str | None = None
+    sunrise_location: str | None = None
+    sunset_location: str | None = None
     lodging: Lodging | None = None
     checklist: list[str] = Field(default_factory=list)
     documents: list[Document] = Field(default_factory=list)

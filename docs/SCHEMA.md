@@ -471,23 +471,34 @@ small enough to ship whole and precache. No lazy loading, no per-day splitting.
 - **`address_source`** records how coordinates were obtained (`coordinates`, `plus_code`,
   `geocoded`, `manual`) so the app can flag low-confidence pins and the validation report
   can list what needs eyeballing.
-- **`sunrise`/`sunset` are computed** at build time from the day's primary lat/lng using
-  `astral` — pure local computation, no network call. **"Primary coordinates"** means
-  the day's *first stop, in stop order, that has resolved coordinates*; if no stop on
-  a day has resolved coordinates yet, `sunrise`/`sunset` stay `null` and the ETL warns.
-  Always uses the day's own declared timezone (from `day_header`), never a stop's —
-  a day can span a timezone boundary, and the day-level sunrise/sunset is a
-  day-level concept. Any stop with `daylight_required = true` additionally gets its
-  **own** `sunset` computed from its **own** coordinates (independent of the day's),
-  since that's the constraint the slack engine actually needs — this is built now even
-  though the sheet's `daylight_required` column is currently empty for every row, so
-  expect zero of these until it's populated.
+- **`sunrise`/`sunset` are computed** at build time using `astral` — pure local
+  computation, no network call. **Each endpoint comes from a different stop, in that
+  stop's own timezone:** `sunrise` from the day's *first stop, in stop order, with
+  resolved coordinates*, using that stop's timezone; `sunset` from the *last* such
+  stop, using its own timezone. Rationale: you see sunrise where you wake up and
+  sunset where you end up — on a day that doesn't move, both resolve to the same
+  stop and nothing changes, but on a day that crosses a timezone (Day 0: Brisbane to
+  Vancouver; Day 10: Jasper to Hope), computing both from the day's single declared
+  timezone put a real place's sun time on a different place's clock. That was the
+  original (wrong) rule — computing from the day's declared timezone regardless of
+  which stop supplied the coordinates — and it produced sunrise/sunset times up to
+  90 minutes off from the sheet's own static lookup on exactly those two days.
+  `sunrise_location`/`sunset_location` record which stop and timezone each came from
+  (`"<title> (<timezone>)"`), so a travel day's numbers are self-explanatory rather
+  than confusing. A day whose two endpoints land in different timezones gets an
+  explicit warning naming both — that's a genuine signal about the day's shape, not
+  noise. If no stop on a day has resolved coordinates yet, both stay `null` (with
+  their `_location` fields) and the ETL warns.
+  Any stop with `daylight_required = true` additionally gets its **own** `sunset`
+  computed from its **own** coordinates and **own** timezone, for the same reason —
+  this is built now even though the sheet's `daylight_required` column is currently
+  empty for every row, so expect zero of these until it's populated.
   **This replaces the `Sunrise_Sunset_Data` tab entirely** — the ETL never read it and
   now never needs to; it stays in the sheet purely for the user's own reference. A
-  location/date combination where the sun never reaches the required angle (polar
-  day/night — not relevant to this trip's latitudes, but `astral` raises rather than
-  returning `None`) is caught and treated the same as unresolvable coordinates: `null`
-  plus a warning, not a crash.
+  location/date combination where the sun never rises or sets (polar day/night — not
+  relevant to this trip's latitudes, but `astral` raises rather than returning `None`)
+  is caught and treated the same as unresolvable coordinates: `null` plus a warning,
+  not a crash.
 - **`legs` polylines are precomputed** at build time — one Routes call per `drive` or
   `walk` leg, a few hundred one-off, well inside the Essentials free tier. This is what
   lets the offline map draw routes with no runtime routing.
