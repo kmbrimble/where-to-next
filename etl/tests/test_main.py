@@ -94,13 +94,15 @@ def test_live_cli_actually_wires_a_short_link_resolver_end_to_end(tmp_path, monk
 
     resolve_calls = []
 
+    from etl.geocode import ShortLinkResult
+
     class SpyShortLinkResolver:
         def __init__(self):
             pass
 
         def resolve(self, url):
             resolve_calls.append(url)
-            return "https://www.google.com/maps/@49.6725,-123.1583,15z"
+            return ShortLinkResult(url="https://www.google.com/maps/@49.6725,-123.1583,15z")
 
     monkeypatch.setattr(main_module, "SheetsLoader", fake_sheets_loader)
     monkeypatch.setattr(main_module, "ShortLinkResolver", SpyShortLinkResolver)

@@ -484,8 +484,14 @@ def resolve_locations(
 
     for stop, plan, category in to_geocode:
         if category == "short_link":
-            final_url = short_link_resolver.resolve(plan.query) if short_link_resolver else None
-            coords = extract_coords_from_maps_url(final_url) if final_url else None
+            if short_link_resolver is None:
+                link_result = None
+                reason = "no ShortLinkResolver configured"
+            else:
+                link_result = short_link_resolver.resolve(plan.query)
+                reason = None if link_result.ok else link_result.error
+
+            coords = extract_coords_from_maps_url(link_result.url) if link_result and link_result.ok else None
             if coords:
                 counts["maps_link"] += 1
                 maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
@@ -495,16 +501,19 @@ def resolve_locations(
                 )
                 continue
 
-            reason = "could not be followed" if not final_url else f"resolved but no coordinates found in {final_url!r}"
+            if link_result is not None and link_result.ok:
+                # Followed fine, but the resolved URL itself had no extractable pin.
+                reason = f"redirect resolved but no coordinates in {link_result.url!r}"
+
             if plan.fallback_query:
                 warnings.append(
-                    f"Row {stop.row_num}: {stop.title!r} — short Maps link {reason}, "
+                    f"Row {stop.row_num}: {stop.title!r} — short Maps link failed: {reason}, "
                     f"falling back to geocoding Address"
                 )
                 counts["geocoded"] += 1
                 geocode_and_apply(stop, plan.fallback_query, "geocoded")
             else:
-                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link {reason}")
+                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link failed: {reason}")
                 counts["unresolved"] += 1
             continue
 
