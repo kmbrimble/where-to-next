@@ -1,7 +1,7 @@
 """Tests for etl/locate.py's resolve_locations orchestration. HTTP mocked, no live calls."""
 from __future__ import annotations
 
-from etl.geocode import GeocodeClient, RequestBudget
+from etl.geocode import GeocodeClient, RequestBudget, ShortLinkResolver
 from etl.locate import resolve_locations
 from etl.models import Day, Stop, Trip, TripMeta
 
@@ -176,3 +176,50 @@ def test_geocoded_low_precision_sorted_into_separate_lists():
     assert any("Some Park" in e for e in report.geometric_center)
     assert not any("Dinner" in e for e in report.geometric_center)
     assert not any("Some Park" in e for e in report.approximate)
+
+
+def test_live_resolves_short_link_via_redirect_follow():
+    resolver = ShortLinkResolver(follow=lambda url: "https://www.google.com/maps/@49.6725,-123.1583,15z")
+    stops = [make_stop(2, links=["https://maps.app.goo.gl/abc123"])]
+    trip = make_trip(stops)
+
+    report = resolve_locations(
+        trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver
+    )
+
+    assert stops[0].lat == 49.6725
+    assert stops[0].lng == -123.1583
+    assert stops[0].resolved_from == "maps_link"
+    assert any("Row 2" in e for e in report.maps_link_short)
+    assert report.errors == []
+
+
+def test_live_short_link_redirect_failure_is_a_warning_not_a_crash():
+    resolver = ShortLinkResolver(follow=lambda url: (_ for _ in ()).throw(TimeoutError("dead")))
+    stops = [make_stop(2, links=["https://maps.app.goo.gl/dead"])]
+    trip = make_trip(stops)
+
+    report = resolve_locations(
+        trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver
+    )
+
+    assert stops[0].lat is None
+    assert report.errors == []
+    assert any("could not be followed" in w for w in report.warnings)
+
+
+def test_dry_run_short_link_makes_no_network_call():
+    calls = []
+
+    def follow(url):
+        calls.append(url)
+        return "https://www.google.com/maps/@49.6725,-123.1583,15z"
+
+    resolver = ShortLinkResolver(follow=follow)
+    stops = [make_stop(2, links=["https://maps.app.goo.gl/abc123"])]
+    trip = make_trip(stops)
+
+    resolve_locations(trip, live=False, client=None, budget=None, short_link_resolver=resolver)
+
+    assert calls == []
+    assert stops[0].lat is None

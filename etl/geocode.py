@@ -87,3 +87,38 @@ class RequestBudget:
                 f"which exceeds the {self.limit}-request safety limit. "
                 "Pass --allow-bulk to override."
             )
+
+
+class ShortLinkResolver:
+    """Follows a maps.app.goo.gl / goo.gl redirect to reveal the real Maps URL with
+    coordinates in it. Counts as a network call (contributes to RequestBudget) and
+    caches per-process so the same short link is only followed once. Failures
+    (dead link, timeout) return None rather than raising — a dead short link is a
+    warning for the caller to raise, not a crash here.
+    """
+
+    def __init__(self, follow: Callable[[str], str | None] | None = None):
+        self._follow = follow or self._http_follow
+        self._cache: dict[str, str | None] = {}
+        self._call_count = 0
+
+    @property
+    def call_count(self) -> int:
+        return self._call_count
+
+    def resolve(self, short_url: str) -> str | None:
+        if short_url in self._cache:
+            return self._cache[short_url]
+        self._call_count += 1
+        try:
+            resolved = self._follow(short_url)
+        except Exception:
+            resolved = None
+        self._cache[short_url] = resolved
+        return resolved
+
+    @staticmethod
+    def _http_follow(short_url: str) -> str | None:
+        req = urllib.request.Request(short_url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.geturl()

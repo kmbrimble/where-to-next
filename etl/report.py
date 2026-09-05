@@ -64,6 +64,45 @@ def render_report(result: ParseResult, location: LocationReport | None = None, l
             lines.append("- none")
         lines.append("")
 
+        lines.append(f"### Maps link (long, no call needed) ({len(location.maps_link_long)})")
+        lines.append("")
+        if location.maps_link_long:
+            for e in location.maps_link_long:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(f"### Maps link (short, needs a redirect follow) ({len(location.maps_link_short)})")
+        lines.append("")
+        if location.maps_link_short:
+            for e in location.maps_link_short:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(
+            f"### Still needs a geocode ({len(location.still_needs_geocode)}) — "
+            "candidates for replacing with a Maps link instead"
+        )
+        lines.append("")
+        if location.still_needs_geocode:
+            for e in location.still_needs_geocode:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(f"### Unparseable Maps URLs ({len(location.unparseable_maps_urls)})")
+        lines.append("")
+        if location.unparseable_maps_urls:
+            for e in location.unparseable_maps_urls:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
         lines.append(
             f"### APPROXIMATE precision ({len(location.approximate)}) — "
             "Google found no specific feature, guessed at an area"

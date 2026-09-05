@@ -93,16 +93,25 @@ vector — so they're optional and only the exceptions need hand-tagging.
 
 ### `Address` resolution
 
-One column, three accepted formats. The ETL detects which and dispatches accordingly:
+Precedence order, checked top to bottom — the first match wins:
 
-| Input looks like | Treatment | API call |
-|---|---|---|
-| `49.6725, -123.1583` | Parsed directly as lat/lng | **None** |
-| `849VCWC8+R9` | Geocoded as a plus code | Geocoding |
-| Anything else | Geocoded as an address string | Geocoding |
+| # | Condition | Treatment | API call |
+|---|---|---|---|
+| a | `Address` parses as a coordinate pair, e.g. `49.6725, -123.1583` | Parsed directly as lat/lng | **None** |
+| b | `Address` parses as a plus code, e.g. `849VCWC8+R9` | Geocoded as a plus code | Geocoding |
+| c | A Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL (`@lat,lng` or `!3d!4d`); a short link (`maps.app.goo.gl`) needs a redirect follow first | None for a long link, one redirect-follow request for a short one |
+| d | `Address` is an address string | Geocoded | Geocoding |
+| e | Nothing usable | Unresolved | None |
 
-Detection order matters — coordinates first, then plus code, then fall through to
-address. Plus signs URL-encode to `%2B` and spaces to `%20`; getting this wrong fails
+**(c) sits above (d) deliberately.** A Maps URL in the sheet was hand-copied by the
+user from Google Maps, pointing at the exact spot they meant — that's stronger
+evidence than geocoding an address string, which can return a confidently wrong
+answer. Row 63 ("Giant Cedars", a real row in this sheet) geocoded to a point near
+Lake Superior, Ontario, ~1800km from Revelstoke, BC, where it belongs. A Maps link
+also outranks a cached geocode for the same reason — if a link shows up later for a
+row that already has a stale geocoded cache, the link wins.
+
+Plus signs URL-encode to `%2B` and spaces to `%20`; getting this wrong fails
 silently with a plausible wrong answer rather than an error.
 
 **Prefer global plus codes over compound ones.** A compound code (`CWC8+R9 Mountain
