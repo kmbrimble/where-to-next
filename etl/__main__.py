@@ -11,8 +11,10 @@ from pathlib import Path
 from .geocode import GeocodeClient, RequestBudget
 from .loaders import CsvLoader, SheetsLoader, get_worksheet
 from .daylight import compute_daylight
+from .legs import compute_legs, load_cache, save_cache
 from .locate import resolve_locations
 from .parse import parse_rows
+from .routes import RoutesClient
 from .report import render_report
 from .writeback import write_back
 
@@ -93,6 +95,25 @@ def main(argv: list[str] | None = None) -> int:
         # warn and leave sunrise/sunset null, which is the documented behaviour.
         daylight = compute_daylight(result.trip)
         result.warnings.extend(daylight.warnings)
+
+        routes_client = None
+        if args.live:
+            routes_key = os.environ.get("GOOGLE_ROUTES_KEY")
+            if not routes_key:
+                parser.error("--live requires GOOGLE_ROUTES_KEY to be set")
+            routes_client = RoutesClient(api_key=routes_key)
+
+        routes_cache = load_cache()
+        try:
+            legs = compute_legs(result.trip, live=args.live, client=routes_client, budget=budget, cache=routes_cache)
+        except RuntimeError as e:
+            result.errors.append(str(e))
+            legs = None
+        else:
+            result.errors.extend(legs.errors)
+            result.warnings.extend(legs.warnings)
+            if args.live:
+                save_cache(routes_cache)
 
     writeback = None
     if result.trip is not None and sheet_id and not args.csv:

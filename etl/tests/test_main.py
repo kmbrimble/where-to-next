@@ -97,6 +97,7 @@ def test_live_cli_never_touches_short_links_directs_to_expand_links_instead(tmp_
     monkeypatch.setattr(main_module, "SheetsLoader", fake_sheets_loader)
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet-from-env")
     monkeypatch.setenv("GOOGLE_GEOCODING_KEY", "fake-key")
+    monkeypatch.setenv("GOOGLE_ROUTES_KEY", "fake-key")
 
     exit_code = main_module.main(["--live", "--no-writeback", "--out-dir", str(tmp_path)])
 
