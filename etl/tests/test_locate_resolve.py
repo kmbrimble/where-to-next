@@ -225,7 +225,7 @@ def test_live_short_link_redirect_failure_is_a_warning_not_a_crash():
 
     assert stops[0].lat is None
     assert report.errors == []
-    assert any("could not be followed" in w for w in report.warnings)
+    assert any("short Maps link failed: timeout" in w for w in report.warnings)
 
 
 def test_dry_run_short_link_makes_no_network_call():

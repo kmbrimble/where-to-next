@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -90,51 +92,74 @@ class RequestBudget:
             )
 
 
+@dataclass
+class ShortLinkResult:
+    """Either url is set (success) or error is a specific, human-readable reason —
+    never both, and error is never a bare "failed"/None with no detail."""
+    url: str | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.url is not None
+
+
 class ShortLinkResolver:
     """Follows a maps.app.goo.gl / goo.gl redirect to reveal the real Maps URL with
     coordinates in it. Counts as a network call (contributes to RequestBudget) and
-    caches per-process so the same short link is only followed once. Failures
-    (dead link, timeout) return None rather than raising — a dead short link is a
-    warning for the caller to raise, not a crash here.
+    caches per-process so the same short link is only followed once.
 
     A small delay before each follow, plus one retry with backoff on failure,
     since a batch of rapid-fire redirect follows can trip transient rate-limiting
-    (observed: 27/27 failures in one run, 0/33 failures when re-run moments later
-    at a slower pace) rather than any real dead link or code bug.
+    rather than any real dead link or code bug.
     """
 
-    def __init__(self, follow: Callable[[str], str | None] | None = None, delay: float = 0.2):
+    def __init__(
+        self, follow: Callable[[str], str | None] | None = None, delay: float = 0.2, timeout: float = 10,
+    ):
         self._follow = follow or self._http_follow
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, ShortLinkResult] = {}
         self._call_count = 0
         self._delay = delay
+        self._timeout = timeout
 
     @property
     def call_count(self) -> int:
         return self._call_count
 
-    def resolve(self, short_url: str) -> str | None:
+    def resolve(self, short_url: str) -> ShortLinkResult:
         if short_url in self._cache:
             return self._cache[short_url]
         self._call_count += 1
 
         time.sleep(self._delay)
-        resolved = self._try_follow(short_url)
-        if resolved is None:
+        result = self._try_follow(short_url)
+        if not result.ok:
             time.sleep(self._delay * 3)  # backoff before the one retry
-            resolved = self._try_follow(short_url)
+            result = self._try_follow(short_url)
 
-        self._cache[short_url] = resolved
-        return resolved
+        self._cache[short_url] = result
+        return result
 
-    def _try_follow(self, short_url: str) -> str | None:
+    def _try_follow(self, short_url: str) -> ShortLinkResult:
         try:
-            return self._follow(short_url)
-        except Exception:
-            return None
+            url = self._follow(short_url)
+        except urllib.error.HTTPError as e:
+            return ShortLinkResult(error=f"HTTP {e.code}")
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, (TimeoutError, socket.timeout)):
+                return ShortLinkResult(error=f"timeout after {self._timeout:g}s")
+            return ShortLinkResult(error=f"URLError: {e.reason}")
+        except TimeoutError:
+            return ShortLinkResult(error=f"timeout after {self._timeout:g}s")
+        except Exception as e:
+            return ShortLinkResult(error=f"{type(e).__name__}: {e}")
 
-    @staticmethod
-    def _http_follow(short_url: str) -> str | None:
+        if not url:
+            return ShortLinkResult(error="redirect resolved but returned no URL")
+        return ShortLinkResult(url=url)
+
+    def _http_follow(self, short_url: str) -> str | None:
         req = urllib.request.Request(short_url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
             return resp.geturl()

@@ -1,6 +1,8 @@
 """Tests for etl/geocode.py — all HTTP mocked via injected fetch, no live calls."""
 from __future__ import annotations
 
+import urllib.error
+
 import pytest
 
 from etl.geocode import GeocodeClient, RequestBudget
@@ -104,15 +106,35 @@ def test_short_link_resolver_follows_and_caches():
     result1 = resolver.resolve("https://maps.app.goo.gl/abc")
     result2 = resolver.resolve("https://maps.app.goo.gl/abc")  # same link again
 
-    assert result1 == "https://www.google.com/maps/@49.6725,-123.1583,15z"
+    assert result1.ok
+    assert result1.url == "https://www.google.com/maps/@49.6725,-123.1583,15z"
     assert result2 == result1
     assert calls == ["https://maps.app.goo.gl/abc"]  # only followed once
     assert resolver.call_count == 1
 
 
-def test_short_link_resolver_handles_failure_gracefully():
+def test_short_link_resolver_surfaces_specific_failure_reason():
     def follow(url):
         raise TimeoutError("dead link")
 
-    resolver = ShortLinkResolver(follow=follow)
-    assert resolver.resolve("https://maps.app.goo.gl/dead") is None
+    resolver = ShortLinkResolver(follow=follow, delay=0)
+    result = resolver.resolve("https://maps.app.goo.gl/dead")
+    assert not result.ok
+    assert "timeout" in result.error.lower()
+
+
+def test_short_link_resolver_surfaces_http_error():
+    def follow(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+    resolver = ShortLinkResolver(follow=follow, delay=0)
+    result = resolver.resolve("https://maps.app.goo.gl/forbidden")
+    assert not result.ok
+    assert result.error == "HTTP 403"
+
+
+def test_short_link_resolver_surfaces_no_coordinates_case():
+    resolver = ShortLinkResolver(follow=lambda url: None, delay=0)
+    result = resolver.resolve("https://maps.app.goo.gl/blank")
+    assert not result.ok
+    assert "no url" in result.error.lower()
