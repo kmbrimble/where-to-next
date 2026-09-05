@@ -502,6 +502,13 @@ small enough to ship whole and precache. No lazy loading, no per-day splitting.
 - **`legs` polylines are precomputed** at build time — one Routes call per `drive` or
   `walk` leg, a few hundred one-off, well inside the Essentials free tier. This is what
   lets the offline map draw routes with no runtime routing.
+- **A `ZERO_RESULTS` leg is a warning, not a build failure.** Google's Routes API
+  occasionally can't find a route between two real points (e.g. two viewpoints with no
+  connecting road in its graph) — usually a sign the coordinates are wrong, not that the
+  whole trip is unbuildable. That leg falls back to the same straight-line geometry the
+  non-routed modes (`train`/`shuttle`/`plane`/`transit`) already use, with `duration_s`
+  left `null`, and a warning naming the leg. One unroutable leg must not withhold the
+  entire published trip; the warning is the more useful signal.
 - **`price` is display-only free text.** Deliberately not parsed; no expense tracking.
 
 ---

@@ -140,6 +140,21 @@ def test_no_divergence_warning_when_close():
     assert not any("divergence" in w for w in report.warnings)
 
 
+def test_zero_results_warns_and_falls_back_to_straight_line():
+    client = RoutesClient(api_key="fake-key", fetch=lambda body: {"routes": []})
+    stops = [make_stop(2, "A", "drive"), make_stop(3, "B", "drive")]
+    trip = make_trip(stops)
+
+    report = compute_legs(trip, live=True, client=client, budget=RequestBudget())
+
+    assert report.errors == []
+    assert any("ZERO_RESULTS" in w and "straight-line" in w for w in report.warnings)
+    leg = trip.days[0].legs[0]
+    assert leg.duration_s is None
+    assert leg.distance_m is None
+    assert leg.polyline
+
+
 def test_null_distance_from_api_is_not_defaulted_to_zero():
     result = RouteResult(polyline="p", distance_m=None, duration_s=600)
     client, calls = fake_client(result)

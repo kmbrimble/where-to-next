@@ -125,7 +125,20 @@ def compute_legs(
     for day, from_stop, to_stop, how, mode, origin, dest, key in to_call:
         result = client.compute_route(origin, dest, mode)
         if result is None:
-            report.errors.append(f"Day {day.day}: {from_stop.title!r} -> {to_stop.title!r} — Routes API returned no route")
+            # ZERO_RESULTS is real but rare (e.g. two viewpoints with no
+            # connecting road in Google's graph) — one unroutable leg must not
+            # withhold the whole trip. Fall back to the same straight-line
+            # geometry the non-routed modes already use, and warn instead of
+            # failing; the warning is more useful than the crash.
+            report.warnings.append(
+                f"Day {day.day}: leg {from_stop.title!r} -> {to_stop.title!r} — Routes API returned "
+                f"no route (ZERO_RESULTS); using straight-line geometry, duration left null"
+            )
+            day.legs.append(Leg(
+                **{"from": from_stop.id}, to=to_stop.id, how=how,
+                distance_m=None, duration_s=None, api_duration_s=None,
+                polyline=encode_polyline([origin, dest]),
+            ))
             continue
         cache[key] = {"polyline": result.polyline, "distance_m": result.distance_m, "duration_s": result.duration_s}
         _apply_leg(day, from_stop, to_stop, how, result, report)
