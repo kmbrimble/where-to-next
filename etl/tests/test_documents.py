@@ -1,7 +1,9 @@
 """Tests for etl/documents.py — mocked Drive and R2, no live calls."""
 from __future__ import annotations
 
-from etl.documents import DocumentsReport, DriveClient, R2Client, compute_documents, parse_filename
+import re
+
+from etl.documents import DocumentsReport, DriveClient, R2Client, compute_documents, document_slug, parse_filename
 from etl.models import Day, Stop, Trip, TripMeta
 
 
@@ -91,10 +93,10 @@ def test_single_date_matches_day():
 
     assert report.matched == 1
     doc = trip.days[0].documents[0]
-    assert doc.id == "20260927 Flight - AC123"
+    assert doc.id == "20260927-flight-ac123"
     assert doc.type == "Flight"
     assert doc.title == "AC123"
-    assert doc.url == "/docs/20260927 Flight - AC123.pdf"
+    assert doc.url == "/docs/20260927-flight-ac123.pdf"
 
 
 def test_date_range_matches_every_day_in_range():
@@ -103,7 +105,7 @@ def test_date_range_matches_every_day_in_range():
 
     compute_documents(trip, live=False, drive=drive)
 
-    assert all(d.documents and d.documents[0].id == "20260927-20260929 Hotel - Listel" for d in trip.days)
+    assert all(d.documents and d.documents[0].id == "20260927-hotel-listel" for d in trip.days)
 
 
 def test_explicit_documents_column_takes_precedence():
@@ -113,9 +115,54 @@ def test_explicit_documents_column_takes_precedence():
     report = compute_documents(trip, live=False, drive=drive)
 
     assert report.matched == 1
-    assert trip.days[2].documents[0].id == "waiver-form"
+    # no date in this filename — slug falls back to type + title only
+    assert trip.days[2].documents[0].id == "unknown-waiver-form"
     # only the referencing day/stop got it, not every day
     assert trip.days[0].documents == []
+
+
+def test_slug_strips_hash_spaces_parens_and_comma():
+    slug = document_slug("2026-09-29", "Activity", "TAG SxS and Vallea Lumina, Confirmation (#FZRUFQ)")
+    assert slug == "20260929-activity-tag-sxs-vallea-lumina"
+    assert re.fullmatch(r"[a-z0-9-]+", slug)
+
+
+def test_slug_is_deterministic():
+    args = ("2026-09-29", "Activity", "TAG SxS and Vallea Lumina, Confirmation (#FZRUFQ)")
+    assert document_slug(*args) == document_slug(*args)
+
+
+def test_colliding_slugs_get_disambiguated_and_warn():
+    # Two different files whose date+type+first-4-significant-title-words are
+    # identical — the differing word (One/Two) falls past the 4-word budget.
+    drive = DriveClient(list_fn=lambda: drive_files(
+        ("20260927 Hotel - Listel Whistler Lodge Reservation Building One.pdf",),
+        ("20260927 Hotel - Listel Whistler Lodge Reservation Building Two.pdf",),
+    ))
+    trip = make_trip()
+
+    report = compute_documents(trip, live=False, drive=drive)
+
+    ids = [d.id for d in trip.days[0].documents]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2  # no actual collision in the output
+    assert all(i.startswith("20260927-hotel-listel-whistler-lodge-reservation") for i in ids)
+    assert any("collided" in w for w in report.warnings)
+
+
+def test_disambiguator_is_deterministic_regardless_of_order():
+    files = [
+        ("20260927 Hotel - Listel Whistler Lodge Reservation Building One.pdf",),
+        ("20260927 Hotel - Listel Whistler Lodge Reservation Building Two.pdf",),
+    ]
+    drive_a = DriveClient(list_fn=lambda: drive_files(*files))
+    drive_b = DriveClient(list_fn=lambda: drive_files(*reversed(files)))
+
+    trip_a, trip_b = make_trip(), make_trip()
+    compute_documents(trip_a, live=False, drive=drive_a)
+    compute_documents(trip_b, live=False, drive=drive_b)
+
+    assert sorted(d.id for d in trip_a.days[0].documents) == sorted(d.id for d in trip_b.days[0].documents)
 
 
 def test_dry_run_uploads_nothing():
@@ -167,7 +214,7 @@ def test_upload_when_no_existing_object():
 
     assert report.uploaded == 1
     assert report.skipped == 0
-    assert uploaded == [("20260927 Flight - AC123.pdf", b"pdf-bytes")]
+    assert uploaded == [("20260927-flight-ac123.pdf", b"pdf-bytes")]
 
 
 def test_missing_r2_credentials_names_the_missing_vars():
