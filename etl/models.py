@@ -58,6 +58,7 @@ class Stop(BaseModel):
     # Row metadata needed for location resolution, not part of the trip.json shape.
     row_num: int = Field(default=0, exclude=True)
     address: str | None = Field(default=None, exclude=True)
+    has_real_id: bool = Field(default=False, exclude=True)
 
 
 class Day(BaseModel):

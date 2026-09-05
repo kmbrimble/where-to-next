@@ -9,10 +9,11 @@ import sys
 from pathlib import Path
 
 from .geocode import GeocodeClient, RequestBudget
-from .loaders import CsvLoader, SheetsLoader
+from .loaders import CsvLoader, SheetsLoader, get_worksheet
 from .locate import resolve_locations
 from .parse import parse_rows
 from .report import render_report
+from .writeback import write_back
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow-bulk", action="store_true",
         help="Lift the 300-geocoding-request safety cap for this run.",
+    )
+    parser.add_argument(
+        "--no-writeback", action="store_true",
+        help="Under --live, geocode but do not write id/lat/lng/place_id/resolved_from back to the sheet.",
     )
     args = parser.parse_args(argv)
 
@@ -75,9 +80,23 @@ def main(argv: list[str] | None = None) -> int:
             result.errors.extend(location.errors)
             result.warnings.extend(location.warnings)
 
+    writeback = None
+    if result.trip is not None and sheet_id and not args.csv:
+        worksheet = get_worksheet(sheet_id, args.worksheet) if (args.live and not args.no_writeback) else None
+        writeback = write_back(
+            result.trip,
+            worksheet,
+            original_row_count=result.row_count,
+            original_plan_checksum=result.plan_checksum,
+            live=args.live,
+            no_writeback=args.no_writeback,
+        )
+        if writeback.aborted:
+            result.errors.append(f"write-back aborted: {writeback.abort_reason}")
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
     report_path = args.out_dir / "report.md"
-    report_path.write_text(render_report(result, location, live=args.live), encoding="utf-8")
+    report_path.write_text(render_report(result, location, live=args.live, writeback=writeback), encoding="utf-8")
 
     if result.trip is None or result.errors:
         print(f"ETL failed with {len(result.errors)} error(s); see {report_path}", file=sys.stderr)

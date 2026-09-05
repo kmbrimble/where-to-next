@@ -3,9 +3,15 @@ from __future__ import annotations
 
 from .locate import LocationReport
 from .parse import ParseResult
+from .writeback import WritebackReport
 
 
-def render_report(result: ParseResult, location: LocationReport | None = None, live: bool = False) -> str:
+def render_report(
+    result: ParseResult,
+    location: LocationReport | None = None,
+    live: bool = False,
+    writeback: WritebackReport | None = None,
+) -> str:
     lines = ["# ETL Report", ""]
 
     lines.append("## Rows parsed by type")
@@ -132,6 +138,44 @@ def render_report(result: ParseResult, location: LocationReport | None = None, l
         lines.append("")
         if location.would_write:
             for w in location.would_write:
+                lines.append(f"- {w}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+    if writeback is not None:
+        lines.append("## Write-back")
+        lines.append("")
+
+        if writeback.aborted:
+            lines.append(f"**Aborted:** {writeback.abort_reason}")
+            lines.append("")
+
+        lines.append(f"### Cells written: {writeback.cells_written}")
+        lines.append("")
+
+        lines.append(f"### Ids newly assigned ({len(writeback.ids_assigned)})")
+        lines.append("")
+        if writeback.ids_assigned:
+            for a in writeback.ids_assigned:
+                lines.append(f"- {a}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(f"### Unmatched rows ({len(writeback.unmatched)})")
+        lines.append("")
+        if writeback.unmatched:
+            for u in writeback.unmatched:
+                lines.append(f"- {u}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(f"### Would write (dry run / --no-writeback / preview) ({len(writeback.would_write)})")
+        lines.append("")
+        if writeback.would_write:
+            for w in writeback.would_write:
                 lines.append(f"- {w}")
         else:
             lines.append("- none")
