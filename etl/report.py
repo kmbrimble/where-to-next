@@ -64,6 +64,30 @@ def render_report(result: ParseResult, location: LocationReport | None = None, l
             lines.append("- none")
         lines.append("")
 
+        lines.append(
+            f"### APPROXIMATE precision ({len(location.approximate)}) — "
+            "Google found no specific feature, guessed at an area"
+        )
+        lines.append("")
+        if location.approximate:
+            for e in location.approximate:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
+        lines.append(
+            f"### GEOMETRIC_CENTER precision ({len(location.geometric_center)}) — "
+            "center of a feature's bounds (e.g. a park or trail), not a pin"
+        )
+        lines.append("")
+        if location.geometric_center:
+            for e in location.geometric_center:
+                lines.append(f"- {e}")
+        else:
+            lines.append("- none")
+        lines.append("")
+
         header = "### Would write (dry run)" if not live else "### Written"
         lines.append(f"{header} ({len(location.would_write)})")
         lines.append("")

@@ -4,8 +4,9 @@ order this implements (coordinates, then plus code, then address string).
 """
 from __future__ import annotations
 
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 # Coordinates are compared to a cache value at this tolerance (~1m) before treating
@@ -174,6 +175,23 @@ def in_bounding_box(lat: float, lng: float, timezone: str) -> bool | None:
     return lat_min <= lat <= lat_max and lng_min <= lng <= lng_max
 
 
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def km_outside_box(lat: float, lng: float, timezone: str) -> float:
+    """Distance from (lat, lng) to the nearest edge of its timezone's bounding box."""
+    lat_min, lat_max, lng_min, lng_max = TIMEZONE_BOUNDING_BOXES[timezone]
+    clamped_lat = min(max(lat, lat_min), lat_max)
+    clamped_lng = min(max(lng, lng_min), lng_max)
+    return _haversine_km(lat, lng, clamped_lat, clamped_lng)
+
+
 @dataclass
 class LocationReport:
     counts: dict
@@ -183,6 +201,8 @@ class LocationReport:
     would_write: list
     errors: list
     warnings: list
+    approximate: list = field(default_factory=list)
+    geometric_center: list = field(default_factory=list)
 
 
 def resolve_locations(trip, *, live: bool, client=None, budget=None) -> LocationReport:
@@ -195,6 +215,8 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
     errors: list[str] = []
     warnings: list[str] = []
     to_geocode: list[tuple] = []
+    approximate: list[str] = []
+    geometric_center: list[str] = []
 
     for day in trip.days:
         for stop in day.stops:
@@ -204,16 +226,22 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
                 counts["cached"] += 1
 
             elif plan.action in ("resolve_coordinates", "overwrite_cache_coordinates"):
-                counts["coordinates"] += 1
                 if plan.warning:
                     warnings.append(f"Row {stop.row_num}: {plan.warning}")
                 box_ok = in_bounding_box(plan.lat, plan.lng, stop.timezone)
                 if box_ok is False:
-                    errors.append(
+                    # Wrong, not corrupt: discard the bad value and treat the stop as
+                    # unresolved rather than failing the whole build over one stop.
+                    dist = km_outside_box(plan.lat, plan.lng, stop.timezone)
+                    counts["unresolved"] += 1
+                    warnings.append(
                         f"Row {stop.row_num}: resolved coordinates ({plan.lat}, {plan.lng}) "
-                        f"outside the {stop.timezone} bounding box"
+                        f"fall ~{dist:.0f}km outside the {stop.timezone} bounding box — discarded"
                     )
+                    if live:
+                        stop.lat, stop.lng, stop.place_id, stop.resolved_from = None, None, None, "unresolved"
                 else:
+                    counts["coordinates"] += 1
                     would_write.append(
                         f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=coordinates"
                     )
@@ -250,7 +278,9 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
     if not live:
         for stop, plan, category in to_geocode:
             would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
-        return LocationReport(counts, projected_calls, 0, eyeball, would_write, errors, warnings)
+        return LocationReport(
+            counts, projected_calls, 0, eyeball, would_write, errors, warnings, approximate, geometric_center
+        )
 
     if budget is not None:
         budget.check(projected_calls)
@@ -260,19 +290,37 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
         if result is None:
             errors.append(f"Row {stop.row_num}: {stop.title!r} — geocode returned no results for {plan.query!r}")
             continue
-        stop.lat, stop.lng, stop.place_id, stop.resolved_from = result.lat, result.lng, result.place_id, category
+
         box_ok = in_bounding_box(result.lat, result.lng, stop.timezone)
         if box_ok is False:
-            errors.append(
+            dist = km_outside_box(result.lat, result.lng, stop.timezone)
+            counts["unresolved"] += 1
+            warnings.append(
                 f"Row {stop.row_num}: resolved coordinates ({result.lat}, {result.lng}) "
-                f"outside the {stop.timezone} bounding box"
+                f"fall ~{dist:.0f}km outside the {stop.timezone} bounding box — discarded"
             )
-        if result.location_type in LOW_PRECISION_TYPES:
-            warnings.append(f"Row {stop.row_num}: geocode precision {result.location_type} — needs eyeballing")
-            eyeball.append(f"Row {stop.row_num}: {stop.title!r} — {result.location_type} precision")
+            stop.lat, stop.lng, stop.place_id, stop.resolved_from = None, None, None, "unresolved"
+            continue
+
+        stop.lat, stop.lng, stop.place_id, stop.resolved_from = result.lat, result.lng, result.place_id, category
+
+        # A plus code always decodes to GEOMETRIC_CENTER (the center of its grid
+        # cell) — that's the format working correctly, not low confidence. Only
+        # geocoded (address-string) results get flagged for precision.
+        if category != "plus_code" and result.location_type in LOW_PRECISION_TYPES:
+            entry = f"Row {stop.row_num}: {stop.title!r}"
+            if result.location_type == "APPROXIMATE":
+                warnings.append(f"Row {stop.row_num}: geocode precision APPROXIMATE (no specific feature found)")
+                approximate.append(entry)
+            else:
+                warnings.append(f"Row {stop.row_num}: geocode precision GEOMETRIC_CENTER")
+                geometric_center.append(entry)
+
         would_write.append(
             f"Row {stop.row_num}: id={stop.id} lat={result.lat} lng={result.lng} resolved_from={category}"
         )
 
     actual_calls = client.call_count if client is not None else 0
-    return LocationReport(counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings)
+    return LocationReport(
+        counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings, approximate, geometric_center
+    )
