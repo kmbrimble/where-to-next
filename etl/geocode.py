@@ -127,6 +127,12 @@ class ShortLinkResolver:
     def call_count(self) -> int:
         return self._call_count
 
+    def forget(self, short_url: str) -> None:
+        """Drop a cached result so the next resolve() actually re-attempts the
+        follow — used by a caller doing its own 429 backoff, since without this
+        the cache would just keep returning the same stale failure."""
+        self._cache.pop(short_url, None)
+
     def resolve(self, short_url: str) -> ShortLinkResult:
         if short_url in self._cache:
             return self._cache[short_url]

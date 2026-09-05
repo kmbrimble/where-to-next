@@ -198,78 +198,33 @@ def test_geocoded_low_precision_sorted_into_separate_lists():
     assert not any("Some Park" in e for e in report.approximate)
 
 
-def test_live_resolves_short_link_via_redirect_follow():
-    resolver = ShortLinkResolver(follow=lambda url: "https://www.google.com/maps/@49.6725,-123.1583,15z")
+def test_short_link_with_no_address_is_unresolved_and_tells_user_to_run_expand_links():
+    # The main ETL never follows short links (Google 429-rate-limits rapid
+    # redirect follows) — that's etl/expand_links.py's job, run separately.
     stops = [make_stop(2, links=["https://maps.app.goo.gl/abc123"])]
     trip = make_trip(stops)
 
-    report = resolve_locations(
-        trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver
-    )
-
-    assert stops[0].lat == 49.6725
-    assert stops[0].lng == -123.1583
-    assert stops[0].resolved_from == "maps_link"
-    assert any("Row 2" in e for e in report.maps_link_short)
-    assert report.errors == []
-
-
-def test_live_short_link_redirect_failure_is_a_warning_not_a_crash():
-    resolver = ShortLinkResolver(follow=lambda url: (_ for _ in ()).throw(TimeoutError("dead")))
-    stops = [make_stop(2, links=["https://maps.app.goo.gl/dead"])]
-    trip = make_trip(stops)
-
-    report = resolve_locations(
-        trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver
-    )
+    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget())
 
     assert stops[0].lat is None
-    assert report.errors == []
-    assert any("short Maps link failed: timeout" in w for w in report.warnings)
+    assert report.counts["unresolved"] == 1
+    assert any("expand_links" in w for w in report.warnings)
 
 
-def test_dry_run_short_link_makes_no_network_call():
-    calls = []
-
-    def follow(url):
-        calls.append(url)
-        return "https://www.google.com/maps/@49.6725,-123.1583,15z"
-
-    resolver = ShortLinkResolver(follow=follow)
+def test_dry_run_short_link_makes_no_network_call_and_needs_no_resolver():
     stops = [make_stop(2, links=["https://maps.app.goo.gl/abc123"])]
-    trip = make_trip(stops)
-
-    resolve_locations(trip, live=False, client=None, budget=None, short_link_resolver=resolver)
-
-    assert calls == []
-    assert stops[0].lat is None
-
-
-def test_dry_run_reports_short_link_as_pending_not_silently_dropped():
-    # Regression: decide_resolution correctly chose resolve_short_link, but
-    # resolve_locations' dry-run branch only added it to would_write generically
-    # and never populated report.maps_link_short — so the dry-run report showed
-    # 0 short links pending even when short links were found and would be
-    # followed under --live. This must show up in maps_link_short, and must NOT
-    # be silently counted as "still needs a geocode".
-    notes = "https://maps.app.goo.gl/PhyHKa3MdSq8jVcn9"
-    stops = [make_stop(2, address="123 Main St, Somewhere", title="Tour", notes=notes)]
     trip = make_trip(stops)
 
     report = resolve_locations(trip, live=False, client=None, budget=None)
 
-    assert any("Row 2" in e for e in report.maps_link_short)
-    assert not any("Row 2" in e for e in report.still_needs_geocode)
-    assert report.projected_calls == 1
-    assert stops[0].lat is None  # dry run never mutates
+    assert stops[0].lat is None
+    assert report.projected_calls == 0  # nothing to geocode — no Address, no cache
+    assert any("expand_links" in w for w in report.warnings)
 
 
-def test_failed_short_link_falls_back_to_geocoding_address_not_unresolved():
-    # Regression: a short link failing (dead redirect, unparseable target) used
-    # to drop the stop straight to unresolved even when a perfectly good Address
-    # was sitting right there. It must fall through to geocoding instead.
-    resolver = ShortLinkResolver(follow=lambda url: None)  # simulates a dead/failed follow
-
+def test_short_link_falls_back_to_geocoding_address_not_unresolved():
+    # A short link is present but never followed; if there's a usable Address,
+    # it must fall through to geocoding it rather than giving up.
     def fetch(url):
         return {"status": "OK", "results": [{
             "place_id": "ChIJfallback", "geometry": {
@@ -281,15 +236,13 @@ def test_failed_short_link_falls_back_to_geocoding_address_not_unresolved():
     stops = [make_stop(2, address="Shannon Falls, Squamish, BC", notes=notes)]
     trip = make_trip(stops)
 
-    report = resolve_locations(
-        trip, live=True, client=client, budget=RequestBudget(), short_link_resolver=resolver,
-    )
+    report = resolve_locations(trip, live=True, client=client, budget=RequestBudget())
 
     assert stops[0].resolved_from == "geocoded"
     assert stops[0].place_id == "ChIJfallback"
     assert stops[0].lat == 49.65
     assert report.counts["unresolved"] == 0
-    assert any("falling back to geocoding" in w for w in report.warnings)
+    assert any("expand_links" in w for w in report.warnings)
 
 
 def test_cached_compound_plus_code_makes_no_call():
@@ -310,16 +263,13 @@ def test_cached_compound_plus_code_makes_no_call():
 
 
 def test_cached_short_link_stop_makes_no_call():
-    resolver = ShortLinkResolver(follow=lambda url: (_ for _ in ()).throw(
-        AssertionError("cached short-link stop must not follow the redirect")
-    ))
     stops = [make_stop(
         2, links=["https://maps.app.goo.gl/abc123"],
         lat=49.6, lng=-123.1, place_id="ChIJcached", resolved_from="maps_link", has_real_id=True,
     )]
     trip = make_trip(stops)
 
-    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver)
+    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget())
 
     assert report.counts["cached"] == 1
     assert stops[0].lat == 49.6  # unchanged
