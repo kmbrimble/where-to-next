@@ -100,7 +100,7 @@ Precedence order, checked top to bottom — the first match wins:
 | a | `Address` parses as a coordinate pair, e.g. `49.6725, -123.1583` | Parsed directly as lat/lng | **None** |
 | b | `Address` parses as a **global** plus code, e.g. `9535R9RG+9X` | Decoded offline (`openlocationcode`), centre of the cell | **None** |
 | b′ | `Address` parses as a **compound** plus code, e.g. `4VMF+42 Whistler, BC` | The locality has to be resolved to recover the missing leading digits | Geocoding |
-| c | A **long** Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL (`@lat,lng` or `!3d!4d`) | **None** |
+| c | A **long** Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL — **`!3d!4d` always preferred over `@lat,lng`**, see below | **None** |
 | c′ | Only a **short** Maps link (`maps.app.goo.gl`, `goo.gl/maps`) is present | Not followed by the main ETL — see "One-time short-link migration" below | None (falls through to (d) if there's also an Address, otherwise unresolved with a warning) |
 | d | `Address` is an address string | Geocoded | Geocoding |
 | e | Nothing usable | Unresolved | None |
@@ -110,6 +110,15 @@ user from Google Maps, pointing at the exact spot they meant — that's stronger
 evidence than geocoding an address string, which can return a confidently wrong
 answer. Row 63 ("Giant Cedars", a real row in this sheet) geocoded to a point near
 Lake Superior, Ontario, ~1800km from Revelstoke, BC, where it belongs.
+
+**`@lat,lng` is the map's VIEWPORT CENTRE, not the place.** It's wherever the map
+was panned/zoomed to when the link was copied, and can be kilometres from the
+actual pin — the user hit exactly this. `!3d<lat>!4d<lng>`, when present, is the
+real place marker's coordinates and is always preferred. `@` is only used as a
+fallback when a URL has no `!3d!4d` segment, and a stop resolved that way gets an
+explicit warning ("coordinates taken from map viewport, not the place marker —
+verify") rather than being trusted silently — the pin needs a human look before
+it's treated as correct.
 
 ### One-time short-link migration
 

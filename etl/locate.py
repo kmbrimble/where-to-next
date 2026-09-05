@@ -65,22 +65,33 @@ def classify_address(raw: str) -> tuple[str, str]:
     return "address", v
 
 
-def extract_coords_from_maps_url(url: str) -> tuple[float, float] | None:
-    """Pull a lat/lng pin out of a Google Maps URL. Prefers !3d<lat>!4d<lng> (the
-    actual pin) over @lat,lng (the viewport centre, which can differ from the pin).
+def extract_coords_from_maps_url(url: str) -> tuple[float, float, bool] | None:
+    """Pull a lat/lng pin out of a Google Maps URL.
+
+    ALWAYS prefer !3d<lat>!4d<lng> (the actual place marker) over @lat,lng (the
+    map VIEWPORT CENTRE) when both are present. The viewport centre is wherever
+    the map happened to be panned/zoomed to when the link was copied — it can be
+    kilometres from the real place, and that exact failure mode is what put a
+    stop's pin in the wrong location before. Do not "simplify" this to just take
+    whichever pattern appears first in the URL.
+
     Short links (maps.app.goo.gl) return None — resolving those needs a redirect
     follow, which is a network call and belongs to the live-geocoding path.
+
+    Returns (lat, lng, low_confidence). low_confidence is True only when there
+    was no !3d!4d segment and the @ viewport centre had to be used instead — the
+    caller should warn, since that value may not be the actual place.
     """
     if "maps.app.goo.gl" in url or "goo.gl" in url:
         return None
 
     m = MAPS_3D4D_RE.search(url)
     if m:
-        return float(m.group(1)), float(m.group(2))
+        return float(m.group(1)), float(m.group(2)), False
 
     m = MAPS_AT_RE.search(url)
     if m:
-        return float(m.group(1)), float(m.group(2))
+        return float(m.group(1)), float(m.group(2)), True
 
     return None
 
@@ -145,7 +156,7 @@ class ResolutionPlan:
     fallback_query: str | None = None  # geocode this Address if resolve_short_link fails
 
 
-def _find_maps_evidence(links: list[str], notes: str | None) -> tuple[tuple[str, float, float] | None, list[str], list[str]]:
+def _find_maps_evidence(links: list[str], notes: str | None) -> tuple[tuple[str, float, float, bool] | None, list[str], list[str]]:
     """Scan Links + Notes for Maps URLs. Returns (first usable long-link hit or
     None, other short links found, other URLs found but not used)."""
     urls: list[str] = []
@@ -161,7 +172,7 @@ def _find_maps_evidence(links: list[str], notes: str | None) -> tuple[tuple[str,
             continue
         coords = extract_coords_from_maps_url(url)
         if coords and long_hit is None:
-            long_hit = (url, coords[0], coords[1])
+            long_hit = (url, coords[0], coords[1], coords[2])
         elif coords:
             unused.append(url)
         else:
@@ -235,9 +246,12 @@ def decide_resolution(
 
     long_hit, short_links, unused = _find_maps_evidence(links, notes)
     if long_hit:
-        _, lat, lng = long_hit
+        _, lat, lng, low_confidence = long_hit
         alt = short_links + unused
-        warning = "resolved from a Maps URL — needs eyeballing"
+        if low_confidence:
+            warning = "coordinates taken from map viewport, not the place marker — verify"
+        else:
+            warning = "resolved from a Maps URL — needs eyeballing"
         if alt:
             warning += f" ({len(alt)} other Maps URL(s) on this row not used)"
         return ResolutionPlan(action="resolve_maps_link", lat=lat, lng=lng, warning=warning, alt_urls=alt)
@@ -416,6 +430,8 @@ def resolve_locations(
                 would_write.append(
                     f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=maps_link"
                 )
+                if plan.warning:
+                    warnings.append(f"Row {stop.row_num}: {stop.title!r} — {plan.warning}")
                 if live:
                     stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "maps_link"
 
