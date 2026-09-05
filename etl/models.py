@@ -1,7 +1,7 @@
 """Pydantic models for trip.json, matching docs/SCHEMA.md section 6.
 
-Stage 1 leaves location-resolution and network-derived fields (lat/lng/place_id,
-sunrise/sunset, legs, documents, checklist) null/empty — that's stage 2.
+Stage 2 resolves lat/lng/place_id/resolved_from and the opaque Stop.id. Route
+polylines, sunrise/sunset, documents and checklist are still null/empty — later stages.
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ class Stop(BaseModel):
     lat: float | None = None
     lng: float | None = None
     place_id: str | None = None
-    address_source: str | None = None
+    resolved_from: str | None = None
     timezone: str
     day_offset: int = 0
     how: str | None = None
@@ -54,6 +54,10 @@ class Stop(BaseModel):
     price: str | None = None
     links: list[str] = Field(default_factory=list)
     documents: list[str] | None = None
+
+    # Row metadata needed for location resolution, not part of the trip.json shape.
+    row_num: int = Field(default=0, exclude=True)
+    address: str | None = Field(default=None, exclude=True)
 
 
 class Day(BaseModel):

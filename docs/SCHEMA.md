@@ -439,7 +439,6 @@ loud failure is the point.
 - `timing = fixed` without `fixed_time`
 - `How` not in the enum
 - `Travel` or `Fun Time` not parseable as a duration (catches text like `1.00pm`, `Zoo??`)
-- Resolved coordinates outside the trip bounding box
 - `Zone` value not a valid IANA timezone identifier
 - Day numbers not contiguous
 
@@ -456,8 +455,20 @@ loud failure is the point.
 - A `blank` row with non-empty `Plan` — `blank` is the only row type left with no
   legitimate reason to carry a stop, so content there usually means `row_type` was
   mistyped. (`day_header` and `day_end` legitimately carry `Plan` now — see §2.)
-- `address_source = geocoded` — flags every stop whose pin was inferred rather than given
-- A geocode returning `APPROXIMATE` or `GEOMETRIC_CENTER` precision
+- `resolved_from = geocoded` — flags every stop whose pin was inferred rather than given
+- A geocode result, or a self-resolved coordinate pair, falling outside the trip's
+  timezone bounding box. **The bad coordinate is discarded, not kept** — the stop's
+  `lat`/`lng`/`place_id` are set to `null` and `resolved_from` becomes `unresolved`,
+  same as a stop with no Address at all. This is a warning rather than a build
+  failure so one bad geocode doesn't block every other stop's `trip.json`; the wrong
+  coordinate still never reaches the app. The warning states the rejected coordinates
+  and how far outside the box they fell.
+- A `geocoded` (address-string) result returning `APPROXIMATE` or `GEOMETRIC_CENTER`
+  precision. **Not** raised for `plus_code` results — a plus code always decodes to
+  the center of its grid cell, so `GEOMETRIC_CENTER` there is the format working
+  correctly, not low confidence. `APPROXIMATE` and `GEOMETRIC_CENTER` are reported
+  separately: `APPROXIMATE` means Google found no specific feature and guessed at an
+  area, which is materially worse than `GEOMETRIC_CENTER`.
 
 ### Validation report
 
