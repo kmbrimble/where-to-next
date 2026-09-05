@@ -88,3 +88,31 @@ def test_request_budget_allow_bulk_overrides():
 
 def test_request_budget_exactly_at_limit_is_allowed():
     RequestBudget(limit=300).check(300)  # no raise, boundary is inclusive
+
+
+from etl.geocode import ShortLinkResolver
+
+
+def test_short_link_resolver_follows_and_caches():
+    calls = []
+
+    def follow(url):
+        calls.append(url)
+        return "https://www.google.com/maps/@49.6725,-123.1583,15z"
+
+    resolver = ShortLinkResolver(follow=follow)
+    result1 = resolver.resolve("https://maps.app.goo.gl/abc")
+    result2 = resolver.resolve("https://maps.app.goo.gl/abc")  # same link again
+
+    assert result1 == "https://www.google.com/maps/@49.6725,-123.1583,15z"
+    assert result2 == result1
+    assert calls == ["https://maps.app.goo.gl/abc"]  # only followed once
+    assert resolver.call_count == 1
+
+
+def test_short_link_resolver_handles_failure_gracefully():
+    def follow(url):
+        raise TimeoutError("dead link")
+
+    resolver = ShortLinkResolver(follow=follow)
+    assert resolver.resolve("https://maps.app.goo.gl/dead") is None

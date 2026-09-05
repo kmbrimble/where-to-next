@@ -57,9 +57,12 @@ def test_empty_address_with_long_maps_link_resolves_from_link():
     assert plan.warning is not None
 
 
-def test_empty_address_with_only_short_link_is_unresolvable():
+def test_empty_address_with_only_short_link_defers_to_redirect_follow():
+    # No longer immediately unresolvable — a short link needs a redirect follow
+    # (network, live-only), deferred via resolve_short_link rather than given up on.
     plan = decide_resolution("", ["https://maps.app.goo.gl/xYz123"], None, None, None)
-    assert plan.action == "unresolvable"
+    assert plan.action == "resolve_short_link"
+    assert plan.query == "https://maps.app.goo.gl/xYz123"
 
 
 def test_empty_address_no_links_is_unresolvable():
@@ -70,3 +73,44 @@ def test_empty_address_no_links_is_unresolvable():
 def test_whitespace_only_address_treated_as_empty():
     plan = decide_resolution("   ", [], None, None, None)
     assert plan.action == "unresolvable"
+
+
+def test_maps_url_in_notes_is_mined():
+    notes = "Great spot, see https://www.google.com/maps/@49.6725,-123.1583,15z for the pin."
+    plan = decide_resolution("", [], None, None, None, notes=notes)
+    assert plan.action == "resolve_maps_link"
+    assert plan.lat == 49.6725
+    assert plan.lng == -123.1583
+
+
+def test_maps_link_outranks_address_string_geocoding():
+    # THE precedence test: an address string is present (would normally geocode),
+    # but a Notes Maps link also yields coordinates. The link must win. Under the
+    # OLD ordering (maps link only consulted when Address is empty), this would
+    # have returned "resolve_address" instead — this test fails under that code.
+    notes = "Pin: https://www.google.com/maps/@49.6725,-123.1583,15z"
+    plan = decide_resolution("Shannon Falls, Squamish, BC", [], None, None, None, notes=notes)
+    assert plan.action == "resolve_maps_link"
+    assert plan.lat == 49.6725
+    assert plan.lng == -123.1583
+
+
+def test_maps_link_outranks_populated_cache_for_address_string():
+    notes = "https://www.google.com/maps/@49.6725,-123.1583,15z"
+    plan = decide_resolution("Shannon Falls, Squamish, BC", [], 40.0, -100.0, "ChIJold", notes=notes)
+    assert plan.action == "resolve_maps_link"
+    assert plan.lat == 49.6725
+
+
+def test_multiple_urls_in_one_cell_prefers_first_usable_and_notes_the_rest():
+    links = [
+        "See https://maps.app.goo.gl/short1 or "
+        "https://www.google.com/maps/@50.0,-120.0,15z or "
+        "https://www.google.com/maps/@51.0,-121.0,15z"
+    ]
+    plan = decide_resolution("", links, None, None, None)
+    assert plan.action == "resolve_maps_link"
+    assert plan.lat == 50.0
+    assert plan.lng == -120.0
+    # the short link and the second long link are both noted as unused
+    assert len(plan.alt_urls) == 2

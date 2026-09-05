@@ -26,6 +26,21 @@ PLUS_CODE_RE = re.compile(
 
 MAPS_AT_RE = re.compile(r"@(-?\d+\.\d+),(-?\d+\.\d+)")
 MAPS_3D4D_RE = re.compile(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)")
+URL_RE = re.compile(r"https?://\S+")
+
+
+def is_short_maps_link(url: str) -> bool:
+    return "maps.app.goo.gl" in url or "goo.gl" in url
+
+
+def find_maps_urls(text: str) -> list[str]:
+    """Find every Google Maps URL in a text blob (Links or Notes), in order of
+    appearance. Trailing punctuation from prose ("see it here.") is stripped.
+    """
+    if not text:
+        return []
+    urls = URL_RE.findall(text)
+    return [u.rstrip(").,;\"'") for u in urls if "google.com/maps" in u or is_short_maps_link(u)]
 
 
 def classify_address(raw: str) -> tuple[str, str]:
@@ -87,12 +102,21 @@ class ResolutionPlan:
       deterministic but can't be decoded offline, so this always calls regardless
       of whether a cache exists — a stale cache is exactly what SCHEMA.md §3 says
       not to trust for a deterministic Address.
-    - "resolve_address": needs a geocode call using `query`. Only reached when the
-      cache is empty — a populated cache is trusted for address strings.
-    - "resolve_maps_link": Address is empty but a Links URL yielded coordinates
-      directly (no network call — the redirect-follow case for short links is a
-      later piece). Always flagged via `warning` for the report's eyeball list.
-    - "unresolvable": Address is empty and no link yielded usable coordinates.
+    - "resolve_maps_link": a Links or Notes URL yielded coordinates directly (no
+      network call). Outranks geocoding an address string and outranks a cached
+      value for one — the URL was hand-copied by the user from Maps pointing at
+      the exact spot they mean, which is stronger evidence than a geocode result
+      (docs/SCHEMA.md §3: geocoding an address string can return a confidently
+      wrong answer). `alt_urls` lists any other Maps URLs found on the row that
+      weren't used.
+    - "resolve_short_link": a short Maps link (maps.app.goo.gl / goo.gl) was found
+      but needs a redirect follow to reveal coordinates — that's a network call,
+      so it's deferred to the live execution path. `query` is the short URL.
+    - "resolve_address": needs a geocode call using `query`. Only reached when
+      there's no coordinate/plus-code Address and no usable Maps URL anywhere on
+      the row, and (if a cache exists) the cache is empty — see resolve_maps_link
+      for why a Maps URL outranks a cached geocode too.
+    - "unresolvable": nothing usable — no Address, no Maps URL, no cache.
     """
     action: str
     lat: float | None = None
@@ -100,6 +124,31 @@ class ResolutionPlan:
     place_id: str | None = None
     query: str | None = None
     warning: str | None = None
+    alt_urls: list[str] = field(default_factory=list)
+
+
+def _find_maps_evidence(links: list[str], notes: str | None) -> tuple[tuple[str, float, float] | None, list[str], list[str]]:
+    """Scan Links + Notes for Maps URLs. Returns (first usable long-link hit or
+    None, other short links found, other URLs found but not used)."""
+    urls: list[str] = []
+    for text in list(links) + [notes or ""]:
+        urls.extend(find_maps_urls(text))
+
+    long_hit = None
+    short_links: list[str] = []
+    unused: list[str] = []
+    for url in urls:
+        if is_short_maps_link(url):
+            short_links.append(url)
+            continue
+        coords = extract_coords_from_maps_url(url)
+        if coords and long_hit is None:
+            long_hit = (url, coords[0], coords[1])
+        elif coords:
+            unused.append(url)
+        else:
+            unused.append(url)
+    return long_hit, short_links, unused
 
 
 def decide_resolution(
@@ -108,6 +157,7 @@ def decide_resolution(
     cached_lat: float | None,
     cached_lng: float | None,
     cached_place_id: str | None,
+    notes: str | None = None,
 ) -> ResolutionPlan:
     kind, normalised = classify_address(address or "")
     has_cache = cached_lat is not None and cached_lng is not None
@@ -132,22 +182,25 @@ def decide_resolution(
     if kind == "plus_code":
         return ResolutionPlan(action="resolve_plus_code", query=normalised)
 
+    # Maps URLs (Links or Notes) outrank geocoding an address string, and outrank
+    # a cached geocode too — see the "resolve_maps_link" note in ResolutionPlan.
+    long_hit, short_links, unused = _find_maps_evidence(links, notes)
+    if long_hit:
+        _, lat, lng = long_hit
+        alt = short_links + unused
+        warning = "resolved from a Maps URL — needs eyeballing"
+        if alt:
+            warning += f" ({len(alt)} other Maps URL(s) on this row not used)"
+        return ResolutionPlan(action="resolve_maps_link", lat=lat, lng=lng, warning=warning, alt_urls=alt)
+
+    if short_links:
+        return ResolutionPlan(action="resolve_short_link", query=short_links[0], alt_urls=short_links[1:] + unused)
+
     if kind == "address":
         if has_cache:
             return ResolutionPlan(action="use_cache", lat=cached_lat, lng=cached_lng, place_id=cached_place_id)
         return ResolutionPlan(action="resolve_address", query=normalised)
 
-    # kind == "empty"
-    for link in links:
-        coords = extract_coords_from_maps_url(link)
-        if coords:
-            lat, lng = coords
-            return ResolutionPlan(
-                action="resolve_maps_link",
-                lat=lat,
-                lng=lng,
-                warning="resolved from a Links URL, not Address — needs eyeballing",
-            )
     return ResolutionPlan(action="unresolvable")
 
 
@@ -203,9 +256,15 @@ class LocationReport:
     warnings: list
     approximate: list = field(default_factory=list)
     geometric_center: list = field(default_factory=list)
+    maps_link_long: list = field(default_factory=list)
+    maps_link_short: list = field(default_factory=list)
+    still_needs_geocode: list = field(default_factory=list)
+    unparseable_maps_urls: list = field(default_factory=list)
 
 
-def resolve_locations(trip, *, live: bool, client=None, budget=None) -> LocationReport:
+def resolve_locations(
+    trip, *, live: bool, client=None, budget=None, short_link_resolver=None
+) -> LocationReport:
     """Walk every stop, decide via decide_resolution(), and either record what WOULD
     happen (dry run — no mutation, no network) or actually resolve it (--live).
     """
@@ -217,10 +276,17 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
     to_geocode: list[tuple] = []
     approximate: list[str] = []
     geometric_center: list[str] = []
+    maps_link_long: list[str] = []
+    maps_link_short: list[str] = []
+    still_needs_geocode: list[str] = []
+    unparseable_maps_urls: list[str] = []
 
     for day in trip.days:
         for stop in day.stops:
-            plan = decide_resolution(stop.address, stop.links, stop.lat, stop.lng, stop.place_id)
+            plan = decide_resolution(stop.address, stop.links, stop.lat, stop.lng, stop.place_id, stop.notes)
+
+            for extra in plan.alt_urls:
+                unparseable_maps_urls.append(f"Row {stop.row_num}: {stop.title!r} — {extra!r} not used")
 
             if plan.action == "use_cache":
                 counts["cached"] += 1
@@ -256,15 +322,20 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
                 counts["geocoded"] += 1
                 to_geocode.append((stop, plan, "geocoded"))
                 eyeball.append(f"Row {stop.row_num}: {stop.title!r} geocoded from address — needs eyeballing")
+                still_needs_geocode.append(f"Row {stop.row_num}: {stop.title!r}")
 
             elif plan.action == "resolve_maps_link":
                 counts["maps_link"] += 1
-                eyeball.append(f"Row {stop.row_num}: {stop.title!r} resolved from Links — needs eyeballing")
+                eyeball.append(f"Row {stop.row_num}: {stop.title!r} resolved from a Maps URL — needs eyeballing")
+                maps_link_long.append(f"Row {stop.row_num}: {stop.title!r}")
                 would_write.append(
                     f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=maps_link"
                 )
                 if live:
                     stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "maps_link"
+
+            elif plan.action == "resolve_short_link":
+                to_geocode.append((stop, plan, "short_link"))
 
             else:  # unresolvable
                 counts["unresolved"] += 1
@@ -277,15 +348,40 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
 
     if not live:
         for stop, plan, category in to_geocode:
-            would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
+            if category == "short_link":
+                would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING short-link follow ({plan.query!r})")
+            else:
+                would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
         return LocationReport(
-            counts, projected_calls, 0, eyeball, would_write, errors, warnings, approximate, geometric_center
+            counts, projected_calls, 0, eyeball, would_write, errors, warnings, approximate, geometric_center,
+            maps_link_long, maps_link_short, still_needs_geocode, unparseable_maps_urls,
         )
 
     if budget is not None:
         budget.check(projected_calls)
 
     for stop, plan, category in to_geocode:
+        if category == "short_link":
+            final_url = short_link_resolver.resolve(plan.query) if short_link_resolver else None
+            if not final_url:
+                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link {plan.query!r} could not be followed")
+                counts["unresolved"] += 1
+                continue
+            coords = extract_coords_from_maps_url(final_url)
+            if not coords:
+                warnings.append(
+                    f"Row {stop.row_num}: {stop.title!r} — short Maps link resolved but no coordinates found in {final_url!r}"
+                )
+                counts["unresolved"] += 1
+                continue
+            counts["maps_link"] += 1
+            maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
+            stop.lat, stop.lng, stop.resolved_from = coords[0], coords[1], "maps_link"
+            would_write.append(
+                f"Row {stop.row_num}: id={stop.id} lat={coords[0]} lng={coords[1]} resolved_from=maps_link"
+            )
+            continue
+
         result = client.geocode(plan.query)
         if result is None:
             errors.append(f"Row {stop.row_num}: {stop.title!r} — geocode returned no results for {plan.query!r}")
@@ -322,5 +418,6 @@ def resolve_locations(trip, *, live: bool, client=None, budget=None) -> Location
 
     actual_calls = client.call_count if client is not None else 0
     return LocationReport(
-        counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings, approximate, geometric_center
+        counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings, approximate, geometric_center,
+        maps_link_long, maps_link_short, still_needs_geocode, unparseable_maps_urls,
     )
