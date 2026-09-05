@@ -140,6 +140,19 @@ def test_no_divergence_warning_when_close():
     assert not any("divergence" in w for w in report.warnings)
 
 
+def test_null_distance_from_api_is_not_defaulted_to_zero():
+    result = RouteResult(polyline="p", distance_m=None, duration_s=600)
+    client, calls = fake_client(result)
+    stops = [make_stop(2, "A", "drive"), make_stop(3, "B", "drive", travel_minutes=10)]
+    trip = make_trip(stops)
+
+    report = compute_legs(trip, live=True, client=client, budget=RequestBudget())
+
+    leg = trip.days[0].legs[0]
+    assert leg.distance_m is None
+    assert any("distanceMeters" in w and "not defaulted to 0" in w for w in report.warnings)
+
+
 def test_straight_line_leg_has_polyline_and_null_duration():
     stops = [make_stop(2, "A", "drive"), make_stop(3, "B", "plane")]
     trip = make_trip(stops)

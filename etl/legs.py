@@ -141,6 +141,12 @@ def _apply_leg(day, from_stop, to_stop, how: str, result: RouteResult, report: L
         polyline=result.polyline,
     ))
 
+    if result.distance_m is None:
+        report.warnings.append(
+            f"Day {day.day}: leg {from_stop.title!r} -> {to_stop.title!r} — Routes API omitted "
+            f"distanceMeters (zero-length route); stored as null, not defaulted to 0"
+        )
+
     # The API's duration is NOT authoritative — the sheet's Travel column (the
     # human's own estimate) remains the schedule's source of truth. This is purely
     # a "your estimate may be stale" signal, and must never touch to_stop.travel_minutes.

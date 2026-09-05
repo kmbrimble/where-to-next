@@ -25,7 +25,7 @@ ROUTING_PREFERENCE = "TRAFFIC_UNAWARE"
 @dataclass
 class RouteResult:
     polyline: str
-    distance_m: int
+    distance_m: int | None
     duration_s: int
 
 
@@ -59,9 +59,27 @@ class RoutesClient:
         if not routes:
             return None
         route = routes[0]
+
+        # distanceMeters is dropped by Google's protobuf-JSON encoding when the
+        # value is exactly 0 (field-presence semantics, not an error) — verified
+        # against a live zero-length route. That's a genuine "0m", not a parse
+        # failure, so it's None+warned by the caller rather than defaulted here.
+        # polyline/duration are never legitimately absent; their absence means
+        # the response shape changed and callers need to know exactly where.
+        if "polyline" not in route or "encodedPolyline" not in route.get("polyline", {}):
+            raise RuntimeError(
+                f"Routes API response missing polyline.encodedPolyline for "
+                f"{origin_latlng} -> {dest_latlng} ({mode})"
+            )
+        if "duration" not in route:
+            raise RuntimeError(
+                f"Routes API response missing duration for "
+                f"{origin_latlng} -> {dest_latlng} ({mode})"
+            )
+
         return RouteResult(
             polyline=route["polyline"]["encodedPolyline"],
-            distance_m=route["distanceMeters"],
+            distance_m=route.get("distanceMeters"),
             duration_s=int(route["duration"].rstrip("s")),
         )
 

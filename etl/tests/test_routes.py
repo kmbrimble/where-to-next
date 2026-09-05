@@ -59,3 +59,35 @@ def test_key_never_appears_in_result_repr():
     client = RoutesClient(api_key="super-secret", fetch=fake_fetch_ok)
     result = client.compute_route((0, 0), (1, 1), "WALK")
     assert "super-secret" not in repr(result)
+
+
+def test_missing_distance_meters_is_none_not_zero():
+    """Google's protobuf-JSON encoding drops distanceMeters entirely for a
+    zero-length route (field-presence semantics) — verified against a live
+    zero-length route. That must surface as None, never a silently-defaulted 0."""
+    def fetch(body):
+        return {"routes": [{"duration": "0s", "polyline": {"encodedPolyline": "a"}}]}
+
+    client = RoutesClient(api_key="fake-key", fetch=fetch)
+    result = client.compute_route((49.28, -123.12), (49.28, -123.12), "DRIVE")
+
+    assert result.distance_m is None
+    assert result.duration_s == 0
+
+
+def test_missing_polyline_raises_with_origin_and_dest():
+    def fetch(body):
+        return {"routes": [{"distanceMeters": 5, "duration": "1s"}]}
+
+    client = RoutesClient(api_key="fake-key", fetch=fetch)
+    with pytest.raises(RuntimeError, match=r"polyline.*49\.1.*-123\.2"):
+        client.compute_route((49.1, -123.2), (49.3, -123.4), "WALK")
+
+
+def test_missing_duration_raises_with_origin_and_dest():
+    def fetch(body):
+        return {"routes": [{"distanceMeters": 5, "polyline": {"encodedPolyline": "a"}}]}
+
+    client = RoutesClient(api_key="fake-key", fetch=fetch)
+    with pytest.raises(RuntimeError, match=r"duration.*49\.1.*-123\.2"):
+        client.compute_route((49.1, -123.2), (49.3, -123.4), "WALK")
