@@ -472,7 +472,22 @@ small enough to ship whole and precache. No lazy loading, no per-day splitting.
   `geocoded`, `manual`) so the app can flag low-confidence pins and the validation report
   can list what needs eyeballing.
 - **`sunrise`/`sunset` are computed** at build time from the day's primary lat/lng using
-  `astral`. Any stop with `daylight_required` gets its own sunset from its own coordinates.
+  `astral` — pure local computation, no network call. **"Primary coordinates"** means
+  the day's *first stop, in stop order, that has resolved coordinates*; if no stop on
+  a day has resolved coordinates yet, `sunrise`/`sunset` stay `null` and the ETL warns.
+  Always uses the day's own declared timezone (from `day_header`), never a stop's —
+  a day can span a timezone boundary, and the day-level sunrise/sunset is a
+  day-level concept. Any stop with `daylight_required = true` additionally gets its
+  **own** `sunset` computed from its **own** coordinates (independent of the day's),
+  since that's the constraint the slack engine actually needs — this is built now even
+  though the sheet's `daylight_required` column is currently empty for every row, so
+  expect zero of these until it's populated.
+  **This replaces the `Sunrise_Sunset_Data` tab entirely** — the ETL never read it and
+  now never needs to; it stays in the sheet purely for the user's own reference. A
+  location/date combination where the sun never reaches the required angle (polar
+  day/night — not relevant to this trip's latitudes, but `astral` raises rather than
+  returning `None`) is caught and treated the same as unresolvable coordinates: `null`
+  plus a warning, not a crash.
 - **`legs` polylines are precomputed** at build time — one Routes call per `drive` or
   `walk` leg, a few hundred one-off, well inside the Essentials free tier. This is what
   lets the offline map draw routes with no runtime routing.
