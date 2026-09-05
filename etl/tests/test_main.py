@@ -71,11 +71,11 @@ def test_csv_and_sheet_id_together_still_rejected(tmp_path):
     assert exc_info.value.code == 2
 
 
-def test_live_cli_actually_wires_a_short_link_resolver_end_to_end(tmp_path, monkeypatch):
-    """Regression for the missing wiring: __main__.py must construct a real
-    ShortLinkResolver and pass it through to resolve_locations() under --live.
-    A resolve_locations()-level test alone can't catch this, since it always takes
-    an explicit short_link_resolver argument regardless of what the CLI does.
+def test_live_cli_never_touches_short_links_directs_to_expand_links_instead(tmp_path, monkeypatch):
+    """The main ETL must never follow a short Maps link (Google 429-rate-limits
+    rapid redirect follows) — that's etl/expand_links.py's job, run separately.
+    A stop with only a short link and no Address must come out unresolved with a
+    warning pointing at expand_links, not a resolved coordinate.
     """
     def fake_sheets_loader(sheet_id, worksheet_name):
         def load():
@@ -92,30 +92,16 @@ def test_live_cli_actually_wires_a_short_link_resolver_end_to_end(tmp_path, monk
             ]
         return load
 
-    resolve_calls = []
-
-    from etl.geocode import ShortLinkResult
-
-    class SpyShortLinkResolver:
-        def __init__(self):
-            pass
-
-        def resolve(self, url):
-            resolve_calls.append(url)
-            return ShortLinkResult(url="https://www.google.com/maps/@49.6725,-123.1583,15z")
+    assert not hasattr(main_module, "ShortLinkResolver"), "main ETL must not import ShortLinkResolver at all"
 
     monkeypatch.setattr(main_module, "SheetsLoader", fake_sheets_loader)
-    monkeypatch.setattr(main_module, "ShortLinkResolver", SpyShortLinkResolver)
     monkeypatch.setenv("GOOGLE_SHEET_ID", "sheet-from-env")
     monkeypatch.setenv("GOOGLE_GEOCODING_KEY", "fake-key")
 
     exit_code = main_module.main(["--live", "--no-writeback", "--out-dir", str(tmp_path)])
 
+    # trip.json isn't written (unresolved stop is a warning, not an error, but the
+    # geocoding wiring above has no client call to make here so the run succeeds)
     assert exit_code == 0
-    assert resolve_calls == ["https://maps.app.goo.gl/abc123"]  # resolver was actually called
-
-    trip = json.loads((tmp_path / "trip.json").read_text())
-    stop = trip["days"][0]["stops"][0]
-    assert stop["lat"] == 49.6725
-    assert stop["lng"] == -123.1583
-    assert stop["resolved_from"] == "maps_link"
+    report_text = (tmp_path / "report.md").read_text()
+    assert "expand_links" in report_text

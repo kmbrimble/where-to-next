@@ -321,7 +321,7 @@ class LocationReport:
 
 
 def resolve_locations(
-    trip, *, live: bool, client=None, budget=None, short_link_resolver=None, reverify: bool = False
+    trip, *, live: bool, client=None, budget=None, reverify: bool = False
 ) -> LocationReport:
     """Walk every stop, decide via decide_resolution(), and either record what WOULD
     happen (dry run — no mutation, no network) or actually resolve it (--live).
@@ -420,7 +420,24 @@ def resolve_locations(
                     stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "maps_link"
 
             elif plan.action == "resolve_short_link":
-                to_geocode.append((stop, plan, "short_link"))
+                # Short links are never followed here — Google rate-limits (HTTP
+                # 429) rapid redirect follows, so that's a one-off migration
+                # (etl/expand_links.py), not something the ETL does per run.
+                if plan.fallback_query:
+                    counts["geocoded"] += 1
+                    to_geocode.append((stop, ResolutionPlan(action="resolve_address", query=plan.fallback_query), "geocoded"))
+                    eyeball.append(f"Row {stop.row_num}: {stop.title!r} geocoded from address — needs eyeballing")
+                    still_needs_geocode.append(f"Row {stop.row_num}: {stop.title!r}")
+                    warnings.append(
+                        f"Row {stop.row_num}: {stop.title!r} has a short Maps link that was not followed "
+                        f"(run `python -m etl.expand_links`) — falling back to geocoding Address"
+                    )
+                else:
+                    counts["unresolved"] += 1
+                    warnings.append(
+                        f"Row {stop.row_num}: {stop.title!r} only has a short Maps link and no Address — "
+                        f"run `python -m etl.expand_links` to resolve it"
+                    )
 
             else:  # unresolvable
                 counts["unresolved"] += 1
@@ -433,11 +450,7 @@ def resolve_locations(
 
     if not live:
         for stop, plan, category in to_geocode:
-            if category == "short_link":
-                would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING short-link follow ({plan.query!r})")
-                maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
-            else:
-                would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
+            would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
         return LocationReport(
             counts, projected_calls, 0, eyeball, would_write, errors, warnings, approximate, geometric_center,
             maps_link_long, maps_link_short, still_needs_geocode, unparseable_maps_urls,
@@ -483,40 +496,6 @@ def resolve_locations(
         )
 
     for stop, plan, category in to_geocode:
-        if category == "short_link":
-            if short_link_resolver is None:
-                link_result = None
-                reason = "no ShortLinkResolver configured"
-            else:
-                link_result = short_link_resolver.resolve(plan.query)
-                reason = None if link_result.ok else link_result.error
-
-            coords = extract_coords_from_maps_url(link_result.url) if link_result and link_result.ok else None
-            if coords:
-                counts["maps_link"] += 1
-                maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
-                stop.lat, stop.lng, stop.resolved_from = coords[0], coords[1], "maps_link"
-                would_write.append(
-                    f"Row {stop.row_num}: id={stop.id} lat={coords[0]} lng={coords[1]} resolved_from=maps_link"
-                )
-                continue
-
-            if link_result is not None and link_result.ok:
-                # Followed fine, but the resolved URL itself had no extractable pin.
-                reason = f"redirect resolved but no coordinates in {link_result.url!r}"
-
-            if plan.fallback_query:
-                warnings.append(
-                    f"Row {stop.row_num}: {stop.title!r} — short Maps link failed: {reason}, "
-                    f"falling back to geocoding Address"
-                )
-                counts["geocoded"] += 1
-                geocode_and_apply(stop, plan.fallback_query, "geocoded")
-            else:
-                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link failed: {reason}")
-                counts["unresolved"] += 1
-            continue
-
         geocode_and_apply(stop, plan.query, category)
 
     actual_calls = client.call_count if client is not None else 0

@@ -100,7 +100,8 @@ Precedence order, checked top to bottom — the first match wins:
 | a | `Address` parses as a coordinate pair, e.g. `49.6725, -123.1583` | Parsed directly as lat/lng | **None** |
 | b | `Address` parses as a **global** plus code, e.g. `9535R9RG+9X` | Decoded offline (`openlocationcode`), centre of the cell | **None** |
 | b′ | `Address` parses as a **compound** plus code, e.g. `4VMF+42 Whistler, BC` | The locality has to be resolved to recover the missing leading digits | Geocoding |
-| c | A Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL (`@lat,lng` or `!3d!4d`); a short link (`maps.app.goo.gl`) needs a redirect follow first | None for a long link, one redirect-follow request for a short one |
+| c | A **long** Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL (`@lat,lng` or `!3d!4d`) | **None** |
+| c′ | Only a **short** Maps link (`maps.app.goo.gl`, `goo.gl/maps`) is present | Not followed by the main ETL — see "One-time short-link migration" below | None (falls through to (d) if there's also an Address, otherwise unresolved with a warning) |
 | d | `Address` is an address string | Geocoded | Geocoding |
 | e | Nothing usable | Unresolved | None |
 
@@ -109,6 +110,28 @@ user from Google Maps, pointing at the exact spot they meant — that's stronger
 evidence than geocoding an address string, which can return a confidently wrong
 answer. Row 63 ("Giant Cedars", a real row in this sheet) geocoded to a point near
 Lake Superior, Ontario, ~1800km from Revelstoke, BC, where it belongs.
+
+### One-time short-link migration
+
+**The main ETL never calls `maps.app.goo.gl` or follows any short link.** Google
+rate-limits (HTTP 429) rapid redirect follows, so doing this on every run is both
+slow and hostile to the account — confirmed directly: a live run following 27 short
+links in quick succession got HTTP 429 on all of them.
+
+Instead, `python -m etl.expand_links` is a **separate, one-time migration script**,
+run by hand, not part of the build:
+
+- Finds every row with a short link in `Links` or `Notes`, follows each one with a
+  generous delay (default 3s, `--delay`) and exponential backoff on 429 (up to 3
+  retries), and stops the whole run rather than grinding through a 429 storm.
+- On success, writes `"lat, lng"` directly into that row's **`Address`** column —
+  never `lat`/`lng`/`place_id` — and only if `Address` is currently empty (or
+  `--overwrite-address` is passed).
+- **Once a coordinate pair is in `Address`, it's permanent and exact: the user's own
+  hand-placed pin.** From then on it resolves via rule (a) above — parsed directly,
+  no geocoding, no redirect-following, no per-run network cost, ever again.
+- `--dry-run` (default) makes zero network calls and reports exactly what would be
+  written.
 
 ### Cache policy
 
