@@ -165,6 +165,23 @@ def test_never_writes_address_or_other_columns():
     assert "C" not in written_ranges
 
 
+def test_unresolved_stop_still_gets_an_id_assigned():
+    """id is a stable row identity for D1 state, decoupled from whether the stop
+    ever resolved to coordinates — a stop with no resolvable Address must not be
+    left on a synthetic placeholder id that's never written to the sheet."""
+    rows = make_sheet_rows(["A"])
+    ws = FakeWorksheet(rows)
+    stop = make_stop(2, lat=None, lng=None, place_id=None, resolved_from=None)
+    trip = make_trip([stop])
+
+    report = write_back(trip, ws, original_row_count=1, original_plan_checksum=plan_checksum(["A"]), live=True)
+
+    assert len(report.ids_assigned) == 1
+    written_row = ws.rows[1]
+    assert written_row[2] != ""  # id column now has a real id
+    assert stop.id != "placeholder2"  # no longer the synthetic parse-time placeholder
+
+
 def test_generate_id_is_short_url_safe_and_deterministic_per_row():
     id1 = generate_id(42)
     id2 = generate_id(42)
