@@ -1,6 +1,8 @@
 """Tests for etl/verify_pins.py — mocked Sheets client, no live calls."""
 from __future__ import annotations
 
+import pytest
+
 from etl.models import Day, Stop, Trip, TripMeta
 from etl.verify_pins import HEADER, build, compute_rows, merge_preserved
 
@@ -25,6 +27,7 @@ class FakeWorksheet:
         self._values = existing_values or []
         self.cleared = False
         self.updated_with = None
+        self.batches = []
 
     def get_all_values(self):
         return self._values
@@ -35,6 +38,9 @@ class FakeWorksheet:
     def update(self, values, value_input_option=None):
         self.updated_with = values
         self._values = values
+
+    def batch_update(self, updates):
+        self.batches.append(updates)
 
 
 def test_column_order():
@@ -122,3 +128,92 @@ def test_dry_run_writes_nothing():
     assert report.would_write is True
     assert report.row_count == 1
     assert report.days == [1]
+
+
+# --- apply step -------------------------------------------------------------
+
+from etl.verify_pins import apply_corrections, parse_corrected_coords, validate_pin_rows  # noqa: E402
+
+ITINERARY_HEADER = ["Plan", "Address", "id", "lat", "lng", "place_id", "resolved_from"]
+
+
+def make_itinerary_ws(rows_by_id: dict[str, list[str]]):
+    """rows_by_id: id -> [plan, address, id, lat, lng, place_id, resolved_from]."""
+    return FakeWorksheet(existing_values=[ITINERARY_HEADER] + list(rows_by_id.values()))
+
+
+def pin_row(id_, corrected_coords="", applied=""):
+    return {"id": id_, "corrected_coords": corrected_coords, "applied": applied}
+
+
+def test_pasted_url_rejected_with_clear_message():
+    with pytest.raises(ValueError, match="Maps URL"):
+        parse_corrected_coords("https://maps.app.goo.gl/xYz123")
+
+
+def test_out_of_box_coordinates_rejected():
+    trip = make_trip([[make_stop(2, "A")]])  # America/Vancouver box
+    rows = [pin_row("row2", corrected_coords="0, 0")]
+
+    candidates, rejected, skipped = validate_pin_rows(rows, trip)
+
+    assert candidates == []
+    assert any("outside the trip's bounding box" in r for r in rejected)
+
+
+def test_one_bad_row_blocks_whole_batch():
+    trip = make_trip([[make_stop(2, "A"), make_stop(3, "B")]])
+    rows = [pin_row("row2", corrected_coords="49.5, -123.5"), pin_row("row3", corrected_coords="not-coords")]
+    itinerary_ws = make_itinerary_ws({
+        "row2": ["A", "old addr", "row2", "49.0", "-123.0", "pid2", "geocoded"],
+        "row3": ["B", "old addr", "row3", "49.1", "-123.1", "pid3", "geocoded"],
+    })
+
+    report = apply_corrections(trip, rows, live=True, itinerary_ws=itinerary_ws, pin_ws=FakeWorksheet())
+
+    assert report.aborted is True
+    assert report.applied == 0
+    assert itinerary_ws.batches == []
+
+
+def test_already_applied_rows_skipped():
+    trip = make_trip([[make_stop(2, "A")]])
+    rows = [pin_row("row2", corrected_coords="49.5, -123.5", applied="2026-01-01T00:00:00Z")]
+
+    candidates, rejected, skipped = validate_pin_rows(rows, trip)
+
+    assert candidates == []
+    assert rejected == []
+    assert any("already applied" in s for s in skipped)
+
+
+def test_dry_run_apply_writes_nothing():
+    trip = make_trip([[make_stop(2, "A")]])
+    rows = [pin_row("row2", corrected_coords="49.5, -123.5")]
+    itinerary_ws = make_itinerary_ws({"row2": ["A", "old addr", "row2", "49.0", "-123.0", "pid2", "geocoded"]})
+
+    report = apply_corrections(trip, rows, live=False, itinerary_ws=itinerary_ws, pin_ws=None)
+
+    assert report.applied == 0
+    assert itinerary_ws.batches == []
+    assert len(report.would_apply) == 1
+
+
+def test_address_written_and_lat_lng_place_id_cleared_on_success():
+    trip = make_trip([[make_stop(2, "A")]])
+    rows = [pin_row("row2", corrected_coords="49.5, -123.5")]
+    itinerary_ws = make_itinerary_ws({"row2": ["A", "old addr", "row2", "49.0", "-123.0", "pid2", "geocoded"]})
+    pin_ws = FakeWorksheet(existing_values=[HEADER, ["row2"] + [""] * (len(HEADER) - 1)])
+
+    report = apply_corrections(trip, rows, live=True, itinerary_ws=itinerary_ws, pin_ws=pin_ws, now="2026-05-01T00:00:00Z")
+
+    assert report.applied == 1
+    assert report.aborted is False
+    updates = {u["range"]: u["values"][0][0] for batch in itinerary_ws.batches for u in batch}
+    assert updates["B2"] == "49.5, -123.5"  # Address column
+    assert updates["D2"] == ""  # lat
+    assert updates["E2"] == ""  # lng
+    assert updates["F2"] == ""  # place_id
+    pin_updates = {u["range"]: u["values"][0][0] for batch in pin_ws.batches for u in batch}
+    applied_col_letter = chr(ord("A") + HEADER.index("applied"))
+    assert pin_updates[f"{applied_col_letter}2"] == "2026-05-01T00:00:00Z"
