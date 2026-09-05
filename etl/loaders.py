@@ -35,24 +35,31 @@ def CsvLoader(path: str | Path) -> RowSource:
     return load
 
 
+def get_worksheet(sheet_id: str | None = None, worksheet_name: str | None = None):
+    """Resolve and return the live gspread Worksheet object itself (not its rows) —
+    used by write-back, which needs to re-read and then write to the same sheet,
+    not just read once like SheetsLoader.
+    """
+    import gspread
+
+    sid = sheet_id or os.environ["GOOGLE_SHEET_ID"]
+    name = worksheet_name or os.environ.get("WORKSHEET_NAME") or DEFAULT_WORKSHEET_NAME
+    key = json.loads(os.environ["GOOGLE_SHEETS_SA_KEY"])
+    client = gspread.service_account_from_dict(key)
+    spreadsheet = client.open_by_key(sid)
+    try:
+        return spreadsheet.worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        available = [ws.title for ws in spreadsheet.worksheets()]
+        raise ValueError(
+            f"Worksheet {name!r} not found in spreadsheet {sid!r}. "
+            f"Available worksheets: {available}"
+        ) from None
+
+
 def SheetsLoader(sheet_id: str | None = None, worksheet_name: str | None = None) -> RowSource:
     def load() -> list[list[str]]:
-        import gspread
-
-        sid = sheet_id or os.environ["GOOGLE_SHEET_ID"]
-        name = worksheet_name or os.environ.get("WORKSHEET_NAME") or DEFAULT_WORKSHEET_NAME
-        key = json.loads(os.environ["GOOGLE_SHEETS_SA_KEY"])
-        client = gspread.service_account_from_dict(key)
-        spreadsheet = client.open_by_key(sid)
-        try:
-            sheet = spreadsheet.worksheet(name)
-        except gspread.exceptions.WorksheetNotFound:
-            available = [ws.title for ws in spreadsheet.worksheets()]
-            raise ValueError(
-                f"Worksheet {name!r} not found in spreadsheet {sid!r}. "
-                f"Available worksheets: {available}"
-            ) from None
-
+        sheet = get_worksheet(sheet_id, worksheet_name)
         rows = sheet.get_all_values()
         if not rows:
             return rows

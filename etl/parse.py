@@ -8,6 +8,7 @@ not in the enum is a hard error.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -109,6 +110,8 @@ class ParseResult:
     warnings: list[str] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
     skipped: int = 0
+    row_count: int = 0
+    plan_checksum: str = ""
 
 
 def parse_rows(source: RowSource) -> ParseResult:
@@ -132,6 +135,13 @@ def parse_rows(source: RowSource) -> ParseResult:
         for h in missing:
             errors.append(f"Missing required header: {h!r}")
         return ParseResult(trip=None, errors=errors, warnings=warnings, counts=counts, skipped=skipped)
+
+    # Snapshot of the raw sheet shape at read time, for writeback's shape-change
+    # guard — a row inserted/removed before write-back runs must be detectable.
+    plan_idx = index.get("plan")
+    row_count = len(data_rows)
+    plan_values = [row[plan_idx] if plan_idx is not None and plan_idx < len(row) else "" for row in data_rows]
+    checksum = hashlib.sha256("\n".join(plan_values).encode()).hexdigest()
 
     def cell(row: list[str], name: str) -> str:
         i = index.get(name)
@@ -268,6 +278,7 @@ def parse_rows(source: RowSource) -> ParseResult:
         try:
             new_stop = Stop(
                 id=id_raw or f"d{current_day['day']:02d}-s{seq:02d}",
+                has_real_id=bool(id_raw),
                 seq=seq,
                 title=plan,
                 kind=kind,
@@ -492,4 +503,7 @@ def parse_rows(source: RowSource) -> ParseResult:
     if not errors and days:
         trip = Trip(trip=TripMeta(start_date=days[0].date, end_date=days[-1].date), days=days)
 
-    return ParseResult(trip=trip, errors=errors, warnings=warnings, counts=counts, skipped=skipped)
+    return ParseResult(
+        trip=trip, errors=errors, warnings=warnings, counts=counts, skipped=skipped,
+        row_count=row_count, plan_checksum=checksum,
+    )
