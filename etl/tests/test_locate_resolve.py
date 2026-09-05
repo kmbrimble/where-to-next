@@ -223,3 +223,22 @@ def test_dry_run_short_link_makes_no_network_call():
 
     assert calls == []
     assert stops[0].lat is None
+
+
+def test_dry_run_reports_short_link_as_pending_not_silently_dropped():
+    # Regression: decide_resolution correctly chose resolve_short_link, but
+    # resolve_locations' dry-run branch only added it to would_write generically
+    # and never populated report.maps_link_short — so the dry-run report showed
+    # 0 short links pending even when short links were found and would be
+    # followed under --live. This must show up in maps_link_short, and must NOT
+    # be silently counted as "still needs a geocode".
+    notes = "https://maps.app.goo.gl/PhyHKa3MdSq8jVcn9"
+    stops = [make_stop(2, address="123 Main St, Somewhere", title="Tour", notes=notes)]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=False, client=None, budget=None)
+
+    assert any("Row 2" in e for e in report.maps_link_short)
+    assert not any("Row 2" in e for e in report.still_needs_geocode)
+    assert report.projected_calls == 1
+    assert stops[0].lat is None  # dry run never mutates
