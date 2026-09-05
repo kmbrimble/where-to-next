@@ -350,6 +350,7 @@ def resolve_locations(
         for stop, plan, category in to_geocode:
             if category == "short_link":
                 would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING short-link follow ({plan.query!r})")
+                maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
             else:
                 would_write.append(f"Row {stop.row_num}: id={stop.id} PENDING geocode ({category}) query={plan.query!r}")
         return LocationReport(

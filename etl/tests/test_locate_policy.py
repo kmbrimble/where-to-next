@@ -114,3 +114,15 @@ def test_multiple_urls_in_one_cell_prefers_first_usable_and_notes_the_rest():
     assert plan.lng == -120.0
     # the short link and the second long link are both noted as unused
     assert len(plan.alt_urls) == 2
+
+
+def test_short_link_outranks_geocoding_an_address_string():
+    # Address is a real geocodable string, but a short Maps link in Notes is
+    # stronger evidence — it must defer to a redirect follow, not geocode.
+    notes = "See https://maps.app.goo.gl/PhyHKa3MdSq8jVcn9 for the exact spot"
+    plan = decide_resolution(
+        "The Adventure Group, Sixteen Mile Creek Forest Service Rd, Whistler, BC", [], None, None, None,
+        notes=notes,
+    )
+    assert plan.action == "resolve_short_link"
+    assert plan.query == "https://maps.app.goo.gl/PhyHKa3MdSq8jVcn9"
