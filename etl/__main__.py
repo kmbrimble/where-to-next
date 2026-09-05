@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-writeback", action="store_true",
         help="Under --live, geocode but do not write id/lat/lng/place_id/resolved_from back to the sheet.",
     )
+    parser.add_argument(
+        "--reverify", action="store_true",
+        help="Ignore cached lat/lng/place_id entirely and re-resolve everything from source. "
+        "Escape hatch for when a cache is suspected wrong.",
+    )
     args = parser.parse_args(argv)
 
     sheet_id = args.sheet_id or os.environ.get("GOOGLE_SHEET_ID")
@@ -72,7 +77,9 @@ def main(argv: list[str] | None = None) -> int:
             budget = RequestBudget(allow_bulk=args.allow_bulk)
 
         try:
-            location = resolve_locations(result.trip, live=args.live, client=client, budget=budget)
+            location = resolve_locations(
+                result.trip, live=args.live, client=client, budget=budget, reverify=args.reverify,
+            )
         except RuntimeError as e:
             result.errors.append(str(e))
             location = None

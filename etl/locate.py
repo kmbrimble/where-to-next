@@ -176,9 +176,14 @@ def decide_resolution(
     cached_lng: float | None,
     cached_place_id: str | None,
     notes: str | None = None,
+    reverify: bool = False,
 ) -> ResolutionPlan:
+    """reverify=True ignores the cache entirely (the --reverify escape hatch) — used
+    when a cache is suspected wrong, since id-based row matching makes normal runs
+    safe to trust the cache without re-checking it (docs/SCHEMA.md §3).
+    """
     kind, normalised = classify_address(address or "")
-    has_cache = cached_lat is not None and cached_lng is not None
+    has_cache = not reverify and cached_lat is not None and cached_lng is not None
 
     if kind == "coordinates":
         m = COORD_RE.match(normalised)
@@ -215,11 +220,19 @@ def decide_resolution(
                 )
             return ResolutionPlan(action="resolve_plus_code_offline", lat=lat, lng=lng)
         # Compound/short code — the locality has to be resolved via geocoding to
-        # recover the missing leading digits; not reconstructable offline.
+        # recover the missing leading digits; not reconstructable offline. Once
+        # cached, trust it rather than re-geocoding every run — the id column now
+        # handles row matching, so the old cache/Address-drift guard is redundant.
+        if has_cache:
+            return ResolutionPlan(action="use_cache", lat=cached_lat, lng=cached_lng, place_id=cached_place_id)
         return ResolutionPlan(action="resolve_plus_code", query=normalised)
 
-    # Maps URLs (Links or Notes) outrank geocoding an address string, and outrank
-    # a cached geocode too — see the "resolve_maps_link" note in ResolutionPlan.
+    # A cached value is trusted here too — no network call, no re-scanning Links/
+    # Notes — for the same reason as compound plus codes above. Maps-URL evidence
+    # is only consulted when there's nothing cached yet to trust.
+    if has_cache:
+        return ResolutionPlan(action="use_cache", lat=cached_lat, lng=cached_lng, place_id=cached_place_id)
+
     long_hit, short_links, unused = _find_maps_evidence(links, notes)
     if long_hit:
         _, lat, lng = long_hit
@@ -233,15 +246,15 @@ def decide_resolution(
         # If the short link fails to resolve (dead link, redirect follow fails),
         # execution must fall through to geocoding the Address rather than giving
         # up — carry it along now so that fallback doesn't need re-deciding later.
-        fallback = normalised if kind == "address" and not has_cache else None
+        # has_cache is always False here (already handled above), so this only
+        # depends on there being a plain address string to fall back to.
+        fallback = normalised if kind == "address" else None
         return ResolutionPlan(
             action="resolve_short_link", query=short_links[0], alt_urls=short_links[1:] + unused,
             fallback_query=fallback,
         )
 
     if kind == "address":
-        if has_cache:
-            return ResolutionPlan(action="use_cache", lat=cached_lat, lng=cached_lng, place_id=cached_place_id)
         return ResolutionPlan(action="resolve_address", query=normalised)
 
     return ResolutionPlan(action="unresolvable")
@@ -308,7 +321,7 @@ class LocationReport:
 
 
 def resolve_locations(
-    trip, *, live: bool, client=None, budget=None, short_link_resolver=None
+    trip, *, live: bool, client=None, budget=None, short_link_resolver=None, reverify: bool = False
 ) -> LocationReport:
     """Walk every stop, decide via decide_resolution(), and either record what WOULD
     happen (dry run — no mutation, no network) or actually resolve it (--live).
@@ -330,7 +343,9 @@ def resolve_locations(
 
     for day in trip.days:
         for stop in day.stops:
-            plan = decide_resolution(stop.address, stop.links, stop.lat, stop.lng, stop.place_id, stop.notes)
+            plan = decide_resolution(
+                stop.address, stop.links, stop.lat, stop.lng, stop.place_id, stop.notes, reverify=reverify,
+            )
 
             for extra in plan.alt_urls:
                 unparseable_maps_urls.append(f"Row {stop.row_num}: {stop.title!r} — {extra!r} not used")
