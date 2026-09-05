@@ -50,6 +50,7 @@ class Stop(BaseModel):
     fixed_time: str | None = None
     arrive_before: int | None = None
     daylight_required: bool = False
+    sunset: str | None = None
     notes: str | None = None
     price: str | None = None
     links: list[str] = Field(default_factory=list)

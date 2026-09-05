@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .geocode import GeocodeClient, RequestBudget
 from .loaders import CsvLoader, SheetsLoader, get_worksheet
+from .daylight import compute_daylight
 from .locate import resolve_locations
 from .parse import parse_rows
 from .report import render_report
@@ -86,6 +87,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             result.errors.extend(location.errors)
             result.warnings.extend(location.warnings)
+
+        # Pure local computation, no network — runs regardless of --live. Under
+        # dry run, stops have no resolved coordinates yet, so this will mostly
+        # warn and leave sunrise/sunset null, which is the documented behaviour.
+        daylight = compute_daylight(result.trip)
+        result.warnings.extend(daylight.warnings)
 
     writeback = None
     if result.trip is not None and sheet_id and not args.csv:
