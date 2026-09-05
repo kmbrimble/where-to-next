@@ -63,15 +63,17 @@ def write_back(
 ) -> WritebackReport:
     """worksheet: a gspread-like object exposing get_all_values() and
     batch_update(list[{"range": "A1", "values": [[...]]}])."""
-    resolved_stops = [
-        s for day in trip.days for s in day.stops
-        if s.lat is not None and s.lng is not None and s.resolved_from not in (None, "unresolved")
-    ]
+    # Every stop gets an id, regardless of resolution status — id is a stable row
+    # identity for D1 state, not a signal that a pin exists. A stop that never
+    # resolves to coordinates must still be addressable (e.g. by Pin Verification
+    # apply, which matches by id) rather than being silently stuck on a synthetic
+    # placeholder id that was never written to the sheet.
+    all_stops = [s for day in trip.days for s in day.stops]
 
     would_write = [
         f"row={s.row_num} id={s.id if s.has_real_id else '<new>'} lat={s.lat} lng={s.lng} "
         f"place_id={s.place_id} resolved_from={s.resolved_from}"
-        for s in resolved_stops
+        for s in all_stops
     ]
 
     if not live or no_writeback:
@@ -122,7 +124,7 @@ def write_back(
     ids_assigned: list[str] = []
     unmatched: list[str] = []
 
-    for stop in resolved_stops:
+    for stop in all_stops:
         if stop.has_real_id:
             current_row = id_to_row.get(stop.id)
             if current_row is None:

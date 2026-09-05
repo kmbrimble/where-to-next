@@ -48,7 +48,24 @@ def _search_again_formula(plan: str, address: str | None) -> str:
 
 def compute_rows(trip) -> list[dict]:
     """One dict per stop, key = HEADER name. corrected_coords/applied start
-    blank — merge_preserved() fills them in from any prior worksheet content."""
+    blank — merge_preserved() fills them in from any prior worksheet content.
+
+    Raises RuntimeError if any stop only has a synthetic placeholder id
+    (has_real_id=False) rather than one actually written to the sheet — such an
+    id can never be found by `apply`'s fresh re-read, which silently blocked a
+    118-row correction batch on 2 rows before this check existed. Run the main
+    ETL --live (with write-back) first to assign real ids to every row.
+    """
+    synthetic = [
+        f"Row {s.row_num} ({s.title!r}, id={s.id!r})"
+        for day in trip.days for s in day.stops if not s.has_real_id
+    ]
+    if synthetic:
+        raise RuntimeError(
+            f"{len(synthetic)} stop(s) have a synthetic placeholder id, not a real sheet id — "
+            f"run the main ETL --live first to assign ids: " + "; ".join(synthetic)
+        )
+
     rows: list[dict] = []
     for day in trip.days:
         located = [s for s in day.stops if s.lat is not None and s.lng is not None]
@@ -349,7 +366,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.live:
             worksheet = get_or_create_worksheet(_open_spreadsheet(sheet_id))
 
-        report = build(result.trip, live=args.live, worksheet=worksheet)
+        try:
+            report = build(result.trip, live=args.live, worksheet=worksheet)
+        except RuntimeError as e:
+            print(str(e), file=sys.stderr)
+            return 1
 
         print(f"{'LIVE' if args.live else 'DRY RUN'} — {report.row_count} row(s) across days {report.days}")
         if not args.live:

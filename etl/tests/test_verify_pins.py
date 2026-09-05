@@ -7,11 +7,12 @@ from etl.models import Day, Stop, Trip, TripMeta
 from etl.verify_pins import HEADER, build, compute_rows, merge_preserved
 
 
-def make_stop(row_num, title, lat=49.0, lng=-123.0, resolved_from="geocoded", address="123 Main St", seq=None) -> Stop:
+def make_stop(row_num, title, lat=49.0, lng=-123.0, resolved_from="geocoded", address="123 Main St", seq=None,
+              has_real_id=True) -> Stop:
     return Stop(
         id=f"row{row_num}", seq=seq if seq is not None else row_num, title=title, kind="poi",
         timezone="America/Vancouver", how="drive", travel_minutes=10, dwell_minutes=10, timing="floating",
-        row_num=row_num, lat=lat, lng=lng, resolved_from=resolved_from, address=address,
+        row_num=row_num, lat=lat, lng=lng, resolved_from=resolved_from, address=address, has_real_id=has_real_id,
     )
 
 
@@ -128,6 +129,15 @@ def test_dry_run_writes_nothing():
     assert report.would_write is True
     assert report.row_count == 1
     assert report.days == [1]
+
+
+def test_build_fails_loudly_on_synthetic_id():
+    """A stop with no real sheet id can never be found by apply's fresh
+    re-read — this must be caught here, not silently reach the user's sheet."""
+    trip = make_trip([[make_stop(2, "A", has_real_id=False)]])
+
+    with pytest.raises(RuntimeError, match="synthetic placeholder id"):
+        build(trip, live=False, worksheet=None)
 
 
 # --- apply step -------------------------------------------------------------
