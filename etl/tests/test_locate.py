@@ -64,19 +64,21 @@ def test_classify_whitespace_only_is_empty():
 
 
 def test_extract_coords_from_long_url_prefers_3d4d_over_at():
+    # @ and !3d!4d deliberately far apart (~1 degree ~ 100km) so a regression
+    # that picks @ instead would be an obvious, large error, not a rounding diff.
     url = (
-        "https://www.google.com/maps/place/Skyline+Viewpoint/@51.0343408,-114.048786,3a,75y"
+        "https://www.google.com/maps/place/Skyline+Viewpoint/@50.0000000,-113.0000000,3a,75y"
         "/data=!3m8!1e2!3m6!1sCIHM0ogKEICAgIDh44vyeQ!2e10"
         "!7i4032!8i3024!4m6!3m5!1s0x537170087db4f3db:0x863939e6cd10b867"
         "!8m2!3d51.0300000!4d-114.0500000"
     )
     result = extract_coords_from_maps_url(url)
-    assert result == (51.0300000, -114.0500000)
+    assert result == (51.0300000, -114.0500000, False)
 
 
-def test_extract_coords_from_url_with_only_at_pattern():
+def test_extract_coords_from_url_with_only_at_pattern_is_low_confidence():
     url = "https://www.google.com/maps/@49.6725,-123.1583,15z"
-    assert extract_coords_from_maps_url(url) == (49.6725, -123.1583)
+    assert extract_coords_from_maps_url(url) == (49.6725, -123.1583, True)
 
 
 def test_extract_coords_from_short_link_returns_none():

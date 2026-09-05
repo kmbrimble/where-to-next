@@ -125,8 +125,9 @@ def expand_links(
             report.rows.append(row)
             continue
 
-        lat, lng = coords
+        lat, lng, low_confidence = coords
         row["lat"], row["lng"] = lat, lng
+        viewport_note = "coordinates taken from map viewport, not the place marker — verify" if low_confidence else None
 
         if c["address"] and not overwrite_address:
             row["status"] = "skipped"
@@ -140,6 +141,8 @@ def expand_links(
                 "values": [[f"{lat}, {lng}"]],
             }])
         row["status"] = "written"
+        if viewport_note:
+            row["detail"] = viewport_note
         report.rows.append(row)
 
     return report
