@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from openlocationcode import openlocationcode as olc
+
 # Coordinates are compared to a cache value at this tolerance (~1m) before treating
 # them as "disagreeing" — floats round-tripped through the sheet lose some precision.
 COORD_TOLERANCE = 1e-5
@@ -88,6 +90,21 @@ def plus_code_query(raw: str) -> str:
     return quote(raw.strip(), safe="")
 
 
+def decode_global_plus_code(normalised: str) -> tuple[float, float] | None:
+    """Decode a GLOBAL plus code offline (openlocationcode), returning the centre
+    of the decoded cell — no API call. Returns None for a compound/short code
+    (e.g. "4VMF+42 Whistler, BC") or one with a trailing locality string: those
+    need the locality resolved via geocoding to recover the missing leading
+    digits, which we deliberately do NOT attempt to reconstruct from a nearby
+    reference (see docs/SCHEMA.md's compound-code note).
+    """
+    code = normalised.split()[0] if normalised.split() else normalised
+    if code != normalised or not olc.isFull(code):
+        return None
+    area = olc.decode(code)
+    return area.latitudeCenter, area.longitudeCenter
+
+
 @dataclass
 class ResolutionPlan:
     """A decision about what to do for one stop's location — never the resolution
@@ -125,6 +142,7 @@ class ResolutionPlan:
     query: str | None = None
     warning: str | None = None
     alt_urls: list[str] = field(default_factory=list)
+    fallback_query: str | None = None  # geocode this Address if resolve_short_link fails
 
 
 def _find_maps_evidence(links: list[str], notes: str | None) -> tuple[tuple[str, float, float] | None, list[str], list[str]]:
@@ -180,6 +198,24 @@ def decide_resolution(
         return ResolutionPlan(action="resolve_coordinates", lat=lat, lng=lng)
 
     if kind == "plus_code":
+        decoded = decode_global_plus_code(normalised)
+        if decoded is not None:
+            lat, lng = decoded
+            if has_cache:
+                if abs(cached_lat - lat) <= COORD_TOLERANCE and abs(cached_lng - lng) <= COORD_TOLERANCE:
+                    return ResolutionPlan(action="use_cache", lat=cached_lat, lng=cached_lng, place_id=cached_place_id)
+                return ResolutionPlan(
+                    action="overwrite_cache_plus_code",
+                    lat=lat,
+                    lng=lng,
+                    warning=(
+                        f"cached lat/lng ({cached_lat}, {cached_lng}) disagreed with the "
+                        f"decoded plus code ({lat}, {lng}) — cache overwritten"
+                    ),
+                )
+            return ResolutionPlan(action="resolve_plus_code_offline", lat=lat, lng=lng)
+        # Compound/short code — the locality has to be resolved via geocoding to
+        # recover the missing leading digits; not reconstructable offline.
         return ResolutionPlan(action="resolve_plus_code", query=normalised)
 
     # Maps URLs (Links or Notes) outrank geocoding an address string, and outrank
@@ -194,7 +230,14 @@ def decide_resolution(
         return ResolutionPlan(action="resolve_maps_link", lat=lat, lng=lng, warning=warning, alt_urls=alt)
 
     if short_links:
-        return ResolutionPlan(action="resolve_short_link", query=short_links[0], alt_urls=short_links[1:] + unused)
+        # If the short link fails to resolve (dead link, redirect follow fails),
+        # execution must fall through to geocoding the Address rather than giving
+        # up — carry it along now so that fallback doesn't need re-deciding later.
+        fallback = normalised if kind == "address" and not has_cache else None
+        return ResolutionPlan(
+            action="resolve_short_link", query=short_links[0], alt_urls=short_links[1:] + unused,
+            fallback_query=fallback,
+        )
 
     if kind == "address":
         if has_cache:
@@ -260,6 +303,8 @@ class LocationReport:
     maps_link_short: list = field(default_factory=list)
     still_needs_geocode: list = field(default_factory=list)
     unparseable_maps_urls: list = field(default_factory=list)
+    plus_code_global: int = 0
+    plus_code_compound: int = 0
 
 
 def resolve_locations(
@@ -280,6 +325,8 @@ def resolve_locations(
     maps_link_short: list[str] = []
     still_needs_geocode: list[str] = []
     unparseable_maps_urls: list[str] = []
+    plus_code_global = 0
+    plus_code_compound = 0
 
     for day in trip.days:
         for stop in day.stops:
@@ -314,8 +361,31 @@ def resolve_locations(
                     if live:
                         stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "coordinates"
 
+            elif plan.action in ("resolve_plus_code_offline", "overwrite_cache_plus_code"):
+                if plan.warning:
+                    warnings.append(f"Row {stop.row_num}: {plan.warning}")
+                box_ok = in_bounding_box(plan.lat, plan.lng, stop.timezone)
+                if box_ok is False:
+                    dist = km_outside_box(plan.lat, plan.lng, stop.timezone)
+                    counts["unresolved"] += 1
+                    warnings.append(
+                        f"Row {stop.row_num}: decoded plus code ({plan.lat}, {plan.lng}) "
+                        f"fall ~{dist:.0f}km outside the {stop.timezone} bounding box — discarded"
+                    )
+                    if live:
+                        stop.lat, stop.lng, stop.place_id, stop.resolved_from = None, None, None, "unresolved"
+                else:
+                    counts["plus_code"] += 1
+                    plus_code_global += 1
+                    would_write.append(
+                        f"Row {stop.row_num}: id={stop.id} lat={plan.lat} lng={plan.lng} resolved_from=plus_code"
+                    )
+                    if live:
+                        stop.lat, stop.lng, stop.resolved_from = plan.lat, plan.lng, "plus_code"
+
             elif plan.action == "resolve_plus_code":
                 counts["plus_code"] += 1
+                plus_code_compound += 1
                 to_geocode.append((stop, plan, "plus_code"))
 
             elif plan.action == "resolve_address":
@@ -356,37 +426,17 @@ def resolve_locations(
         return LocationReport(
             counts, projected_calls, 0, eyeball, would_write, errors, warnings, approximate, geometric_center,
             maps_link_long, maps_link_short, still_needs_geocode, unparseable_maps_urls,
+            plus_code_global, plus_code_compound,
         )
 
     if budget is not None:
         budget.check(projected_calls)
 
-    for stop, plan, category in to_geocode:
-        if category == "short_link":
-            final_url = short_link_resolver.resolve(plan.query) if short_link_resolver else None
-            if not final_url:
-                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link {plan.query!r} could not be followed")
-                counts["unresolved"] += 1
-                continue
-            coords = extract_coords_from_maps_url(final_url)
-            if not coords:
-                warnings.append(
-                    f"Row {stop.row_num}: {stop.title!r} — short Maps link resolved but no coordinates found in {final_url!r}"
-                )
-                counts["unresolved"] += 1
-                continue
-            counts["maps_link"] += 1
-            maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
-            stop.lat, stop.lng, stop.resolved_from = coords[0], coords[1], "maps_link"
-            would_write.append(
-                f"Row {stop.row_num}: id={stop.id} lat={coords[0]} lng={coords[1]} resolved_from=maps_link"
-            )
-            continue
-
-        result = client.geocode(plan.query)
+    def geocode_and_apply(stop, query: str, category: str) -> None:
+        result = client.geocode(query)
         if result is None:
-            errors.append(f"Row {stop.row_num}: {stop.title!r} — geocode returned no results for {plan.query!r}")
-            continue
+            errors.append(f"Row {stop.row_num}: {stop.title!r} — geocode returned no results for {query!r}")
+            return
 
         box_ok = in_bounding_box(result.lat, result.lng, stop.timezone)
         if box_ok is False:
@@ -397,7 +447,7 @@ def resolve_locations(
                 f"fall ~{dist:.0f}km outside the {stop.timezone} bounding box — discarded"
             )
             stop.lat, stop.lng, stop.place_id, stop.resolved_from = None, None, None, "unresolved"
-            continue
+            return
 
         stop.lat, stop.lng, stop.place_id, stop.resolved_from = result.lat, result.lng, result.place_id, category
 
@@ -417,8 +467,37 @@ def resolve_locations(
             f"Row {stop.row_num}: id={stop.id} lat={result.lat} lng={result.lng} resolved_from={category}"
         )
 
+    for stop, plan, category in to_geocode:
+        if category == "short_link":
+            final_url = short_link_resolver.resolve(plan.query) if short_link_resolver else None
+            coords = extract_coords_from_maps_url(final_url) if final_url else None
+            if coords:
+                counts["maps_link"] += 1
+                maps_link_short.append(f"Row {stop.row_num}: {stop.title!r}")
+                stop.lat, stop.lng, stop.resolved_from = coords[0], coords[1], "maps_link"
+                would_write.append(
+                    f"Row {stop.row_num}: id={stop.id} lat={coords[0]} lng={coords[1]} resolved_from=maps_link"
+                )
+                continue
+
+            reason = "could not be followed" if not final_url else f"resolved but no coordinates found in {final_url!r}"
+            if plan.fallback_query:
+                warnings.append(
+                    f"Row {stop.row_num}: {stop.title!r} — short Maps link {reason}, "
+                    f"falling back to geocoding Address"
+                )
+                counts["geocoded"] += 1
+                geocode_and_apply(stop, plan.fallback_query, "geocoded")
+            else:
+                warnings.append(f"Row {stop.row_num}: {stop.title!r} — short Maps link {reason}")
+                counts["unresolved"] += 1
+            continue
+
+        geocode_and_apply(stop, plan.query, category)
+
     actual_calls = client.call_count if client is not None else 0
     return LocationReport(
         counts, projected_calls, actual_calls, eyeball, would_write, errors, warnings, approximate, geometric_center,
         maps_link_long, maps_link_short, still_needs_geocode, unparseable_maps_urls,
+        plus_code_global, plus_code_compound,
     )

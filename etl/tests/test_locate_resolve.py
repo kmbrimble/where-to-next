@@ -28,16 +28,19 @@ def test_dry_run_makes_zero_network_calls():
     client = GeocodeClient(api_key="fake-key", fetch=exploding_fetch)
     stops = [
         make_stop(2, address="Shannon Falls, Squamish, BC"),
-        make_stop(3, address="9535R9RG+9X"),
+        make_stop(3, address="4VMF+42 Whistler, British Columbia, Canada"),  # compound -> needs a call
+        make_stop(4, address="9535R9RG+9X"),  # global -> decodes offline, no call
     ]
     trip = make_trip(stops)
 
     report = resolve_locations(trip, live=False, client=client, budget=None)
 
     assert client.call_count == 0
-    assert report.projected_calls == 2
+    assert report.projected_calls == 2  # address string + compound code; global code is free
+    assert report.plus_code_global == 1
+    assert report.plus_code_compound == 1
     assert report.actual_calls == 0
-    # dry run must not fabricate values
+    # dry run must not fabricate values, even for the free-to-resolve global code
     assert all(s.lat is None for s in stops)
 
 
@@ -132,9 +135,10 @@ def test_bounding_box_accepts_coordinates_inside_the_zone():
     assert stops[0].lat == 49.6725
 
 
-def test_plus_code_geometric_center_is_not_flagged_as_low_precision():
-    # A plus code always decodes to GEOMETRIC_CENTER — that's correct behaviour for
-    # the format, not low confidence, so it must not appear in either precision list.
+def test_compound_plus_code_geometric_center_is_not_flagged_as_low_precision():
+    # A geocoded plus code always decodes to GEOMETRIC_CENTER — that's correct
+    # behaviour for the format, not low confidence, so it must not be flagged.
+    # (A global code wouldn't hit this path at all — it decodes offline, no geocode.)
     def fetch(url):
         return {"status": "OK", "results": [{
             "place_id": "ChIJpc", "geometry": {
@@ -143,15 +147,31 @@ def test_plus_code_geometric_center_is_not_flagged_as_low_precision():
         }]}
 
     client = GeocodeClient(api_key="fake-key", fetch=fetch)
+    stops = [make_stop(48, address="4VMF+42 Whistler, British Columbia, Canada")]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=client, budget=RequestBudget())
+
+    assert client.call_count == 1  # compound code still needs the call
+    assert report.geometric_center == []
+    assert report.approximate == []
+    assert not any("precision" in w for w in report.warnings)
+    assert stops[0].lat == 50.13  # still resolved, just not flagged
+
+
+def test_global_plus_code_resolves_offline_with_zero_calls_under_live():
+    client = GeocodeClient(api_key="fake-key", fetch=lambda url: (_ for _ in ()).throw(
+        AssertionError("global plus code must not call the geocoder")
+    ))
     stops = [make_stop(48, address="9535R9RG+9X")]
     trip = make_trip(stops)
 
     report = resolve_locations(trip, live=True, client=client, budget=RequestBudget())
 
-    assert report.geometric_center == []
-    assert report.approximate == []
-    assert not any("precision" in w for w in report.warnings)
-    assert stops[0].lat == 50.13  # still resolved, just not flagged
+    assert client.call_count == 0
+    assert report.actual_calls == 0
+    assert stops[0].resolved_from == "plus_code"
+    assert stops[0].lat is not None
 
 
 def test_geocoded_low_precision_sorted_into_separate_lists():
@@ -242,3 +262,31 @@ def test_dry_run_reports_short_link_as_pending_not_silently_dropped():
     assert not any("Row 2" in e for e in report.still_needs_geocode)
     assert report.projected_calls == 1
     assert stops[0].lat is None  # dry run never mutates
+
+
+def test_failed_short_link_falls_back_to_geocoding_address_not_unresolved():
+    # Regression: a short link failing (dead redirect, unparseable target) used
+    # to drop the stop straight to unresolved even when a perfectly good Address
+    # was sitting right there. It must fall through to geocoding instead.
+    resolver = ShortLinkResolver(follow=lambda url: None)  # simulates a dead/failed follow
+
+    def fetch(url):
+        return {"status": "OK", "results": [{
+            "place_id": "ChIJfallback", "geometry": {
+                "location": {"lat": 49.65, "lng": -123.2}, "location_type": "ROOFTOP"},
+        }]}
+
+    client = GeocodeClient(api_key="fake-key", fetch=fetch)
+    notes = "https://maps.app.goo.gl/deadlink123"
+    stops = [make_stop(2, address="Shannon Falls, Squamish, BC", notes=notes)]
+    trip = make_trip(stops)
+
+    report = resolve_locations(
+        trip, live=True, client=client, budget=RequestBudget(), short_link_resolver=resolver,
+    )
+
+    assert stops[0].resolved_from == "geocoded"
+    assert stops[0].place_id == "ChIJfallback"
+    assert stops[0].lat == 49.65
+    assert report.counts["unresolved"] == 0
+    assert any("falling back to geocoding" in w for w in report.warnings)

@@ -55,6 +55,12 @@ def render_report(
             lines.append(f"- {key}: {location.counts[key]}")
         lines.append("")
 
+        lines.append(
+            f"### Plus codes: {location.plus_code_global} global (decoded offline, no call), "
+            f"{location.plus_code_compound} compound (need geocoding)"
+        )
+        lines.append("")
+
         if live:
             lines.append(f"### Geocoding calls made: {location.actual_calls}")
         else:

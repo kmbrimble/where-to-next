@@ -27,12 +27,35 @@ def test_coordinates_cache_disagrees_overwrites_and_warns():
     assert "disagreed" in plan.warning
 
 
-def test_plus_code_always_resolves_regardless_of_cache():
-    plan_no_cache = decide_resolution("9535R9RG+9X", [], None, None, None)
-    plan_with_cache = decide_resolution("9535R9RG+9X", [], 51.0, -115.0, "ChIJcached")
+def test_compound_plus_code_always_geocodes_regardless_of_cache():
+    # A compound code needs a locality resolved via geocoding to recover the
+    # missing leading digits — that always calls, cache or not.
+    compound = "4VMF+42 Whistler, British Columbia, Canada"
+    plan_no_cache = decide_resolution(compound, [], None, None, None)
+    plan_with_cache = decide_resolution(compound, [], 51.0, -115.0, "ChIJcached")
     assert plan_no_cache.action == "resolve_plus_code"
     assert plan_with_cache.action == "resolve_plus_code"
-    assert plan_no_cache.query == "9535R9RG+9X"
+    assert plan_no_cache.query == compound
+
+
+def test_global_plus_code_decodes_offline_no_cache():
+    plan = decide_resolution("9535R9RG+9X", [], None, None, None)
+    assert plan.action == "resolve_plus_code_offline"
+    assert plan.lat is not None and plan.lng is not None
+    assert plan.query is None  # no query needed — nothing gets sent anywhere
+
+
+def test_global_plus_code_cache_agrees_uses_cache():
+    plan = decide_resolution("9535R9RG+9X", [], None, None, None)
+    lat, lng = plan.lat, plan.lng
+    cached_plan = decide_resolution("9535R9RG+9X", [], lat, lng, "ChIJexisting")
+    assert cached_plan.action == "use_cache"
+
+
+def test_global_plus_code_cache_disagrees_overwrites_and_warns():
+    plan = decide_resolution("9535R9RG+9X", [], 1.0, 1.0, "ChIJold")
+    assert plan.action == "overwrite_cache_plus_code"
+    assert plan.warning is not None and "disagreed" in plan.warning
 
 
 def test_address_string_with_cache_uses_cache_no_call():
