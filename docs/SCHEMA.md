@@ -98,7 +98,8 @@ Precedence order, checked top to bottom — the first match wins:
 | # | Condition | Treatment | API call |
 |---|---|---|---|
 | a | `Address` parses as a coordinate pair, e.g. `49.6725, -123.1583` | Parsed directly as lat/lng | **None** |
-| b | `Address` parses as a plus code, e.g. `849VCWC8+R9` | Geocoded as a plus code | Geocoding |
+| b | `Address` parses as a **global** plus code, e.g. `9535R9RG+9X` | Decoded offline (`openlocationcode`), centre of the cell | **None** |
+| b′ | `Address` parses as a **compound** plus code, e.g. `4VMF+42 Whistler, BC` | The locality has to be resolved to recover the missing leading digits | Geocoding |
 | c | A Google Maps URL in `Links` or `Notes` yields coordinates | Extracted from the URL (`@lat,lng` or `!3d!4d`); a short link (`maps.app.goo.gl`) needs a redirect follow first | None for a long link, one redirect-follow request for a short one |
 | d | `Address` is an address string | Geocoded | Geocoding |
 | e | Nothing usable | Unresolved | None |
@@ -107,9 +108,31 @@ Precedence order, checked top to bottom — the first match wins:
 user from Google Maps, pointing at the exact spot they meant — that's stronger
 evidence than geocoding an address string, which can return a confidently wrong
 answer. Row 63 ("Giant Cedars", a real row in this sheet) geocoded to a point near
-Lake Superior, Ontario, ~1800km from Revelstoke, BC, where it belongs. A Maps link
-also outranks a cached geocode for the same reason — if a link shows up later for a
-row that already has a stale geocoded cache, the link wins.
+Lake Superior, Ontario, ~1800km from Revelstoke, BC, where it belongs.
+
+### Cache policy
+
+Once a stop has a cached `lat`/`lng`/`place_id` (previously written back by the ETL),
+what happens next depends on how cheap re-checking it is:
+
+- **Coordinate pairs and global plus codes** (a, b) resolve offline for free, so they
+  keep self-verifying on every run: if the cached value disagrees with what the
+  Address deterministically decodes to, the **cache** is wrong — it's overwritten and
+  a warning is logged. Costs nothing to check, so it's always checked.
+- **Compound plus codes, address strings, and Maps links** (b′, c, d) are trusted
+  once cached, with **no re-verification and no network call** — the cache simply
+  wins, regardless of what the Address column classifies as. Earlier versions of this
+  ETL re-verified these on every run to catch cache/Address drift if someone dragged
+  content cells and left the ETL-written columns behind; row matching is now done by
+  the opaque `id` column instead (§4), which makes that guard redundant. In steady
+  state this is the difference between ~55 network calls/run forever and near zero.
+- **`--reverify`** ignores every cache and re-resolves everything from source. This is
+  the escape hatch for when a cache is suspected wrong — it trades the steady-state
+  savings above for a full re-check, on demand rather than by default.
+- **Clearing `lat`/`lng` in the sheet** still forces re-resolution on the very next
+  run without needing `--reverify` — an empty cache is simply not a cache. This is the
+  documented, everyday correction mechanism (see Write-back below) and doesn't depend
+  on the escape hatch at all.
 
 Plus signs URL-encode to `%2B` and spaces to `%20`; getting this wrong fails
 silently with a plausible wrong answer rather than an error.

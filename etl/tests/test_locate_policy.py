@@ -27,15 +27,23 @@ def test_coordinates_cache_disagrees_overwrites_and_warns():
     assert "disagreed" in plan.warning
 
 
-def test_compound_plus_code_always_geocodes_regardless_of_cache():
+def test_compound_plus_code_geocodes_when_uncached_but_trusts_a_populated_cache():
     # A compound code needs a locality resolved via geocoding to recover the
-    # missing leading digits — that always calls, cache or not.
+    # missing leading digits when there's nothing cached yet. Once cached, id-based
+    # row matching makes the old constant-reverification guard redundant — trust it.
     compound = "4VMF+42 Whistler, British Columbia, Canada"
     plan_no_cache = decide_resolution(compound, [], None, None, None)
     plan_with_cache = decide_resolution(compound, [], 51.0, -115.0, "ChIJcached")
     assert plan_no_cache.action == "resolve_plus_code"
-    assert plan_with_cache.action == "resolve_plus_code"
     assert plan_no_cache.query == compound
+    assert plan_with_cache.action == "use_cache"
+    assert plan_with_cache.place_id == "ChIJcached"
+
+
+def test_reverify_ignores_cache_for_compound_plus_code():
+    compound = "4VMF+42 Whistler, British Columbia, Canada"
+    plan = decide_resolution(compound, [], 51.0, -115.0, "ChIJcached", reverify=True)
+    assert plan.action == "resolve_plus_code"
 
 
 def test_global_plus_code_decodes_offline_no_cache():
@@ -118,9 +126,21 @@ def test_maps_link_outranks_address_string_geocoding():
     assert plan.lng == -123.1583
 
 
-def test_maps_link_outranks_populated_cache_for_address_string():
+def test_populated_cache_now_outranks_a_maps_link_for_address_string():
+    # Trust-the-cache policy: once cached, a Maps URL turning up later is not
+    # re-checked against it — id-based row matching is the guard now, not
+    # constant re-verification (docs/SCHEMA.md §3).
     notes = "https://www.google.com/maps/@49.6725,-123.1583,15z"
     plan = decide_resolution("Shannon Falls, Squamish, BC", [], 40.0, -100.0, "ChIJold", notes=notes)
+    assert plan.action == "use_cache"
+    assert plan.lat == 40.0
+
+
+def test_reverify_makes_a_maps_link_outrank_cache_again():
+    notes = "https://www.google.com/maps/@49.6725,-123.1583,15z"
+    plan = decide_resolution(
+        "Shannon Falls, Squamish, BC", [], 40.0, -100.0, "ChIJold", notes=notes, reverify=True,
+    )
     assert plan.action == "resolve_maps_link"
     assert plan.lat == 49.6725
 

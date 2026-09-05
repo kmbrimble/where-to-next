@@ -290,3 +290,86 @@ def test_failed_short_link_falls_back_to_geocoding_address_not_unresolved():
     assert stops[0].lat == 49.65
     assert report.counts["unresolved"] == 0
     assert any("falling back to geocoding" in w for w in report.warnings)
+
+
+def test_cached_compound_plus_code_makes_no_call():
+    client = GeocodeClient(api_key="fake-key", fetch=lambda url: (_ for _ in ()).throw(
+        AssertionError("cached compound plus code must not call the geocoder")
+    ))
+    stops = [make_stop(
+        2, address="4VMF+42 Whistler, British Columbia, Canada",
+        lat=50.13, lng=-122.95, place_id="ChIJcached", resolved_from="plus_code", has_real_id=True,
+    )]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=client, budget=RequestBudget())
+
+    assert client.call_count == 0
+    assert report.counts["cached"] == 1
+    assert stops[0].lat == 50.13  # unchanged
+
+
+def test_cached_short_link_stop_makes_no_call():
+    resolver = ShortLinkResolver(follow=lambda url: (_ for _ in ()).throw(
+        AssertionError("cached short-link stop must not follow the redirect")
+    ))
+    stops = [make_stop(
+        2, links=["https://maps.app.goo.gl/abc123"],
+        lat=49.6, lng=-123.1, place_id="ChIJcached", resolved_from="maps_link", has_real_id=True,
+    )]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget(), short_link_resolver=resolver)
+
+    assert report.counts["cached"] == 1
+    assert stops[0].lat == 49.6  # unchanged
+
+
+def test_reverify_forces_full_re_resolution_ignoring_cache():
+    def fetch(url):
+        return {"status": "OK", "results": [{
+            "place_id": "ChIJnew", "geometry": {"location": {"lat": 51.0, "lng": -117.0}, "location_type": "ROOFTOP"},
+        }]}
+
+    client = GeocodeClient(api_key="fake-key", fetch=fetch)
+    stops = [make_stop(
+        2, address="4VMF+42 Whistler, British Columbia, Canada",
+        lat=50.13, lng=-122.95, place_id="ChIJold", resolved_from="plus_code", has_real_id=True,
+    )]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=client, budget=RequestBudget(), reverify=True)
+
+    assert client.call_count == 1
+    assert stops[0].place_id == "ChIJnew"
+    assert stops[0].lat == 51.0
+
+
+def test_cleared_cache_still_triggers_resolution():
+    # Clearing lat/lng in the sheet is the documented correction mechanism — it
+    # must still force re-resolution even with reverify=False (the default).
+    stops = [make_stop(2, address="49.6725, -123.1583", lat=None, lng=None, resolved_from=None)]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget())
+
+    assert stops[0].lat == 49.6725
+    assert report.counts["coordinates"] == 1
+    assert report.counts["cached"] == 0
+
+
+def test_cache_disagreement_on_global_plus_code_still_warns_and_overwrites():
+    # Offline-decodable sources (coordinates, global plus codes) cost nothing to
+    # verify, so disagreement is still caught even though the trust-cache policy
+    # otherwise skips re-verification for compound codes / addresses / Maps links.
+    stops = [make_stop(
+        2, address="9535R9RG+9X", lat=1.0, lng=1.0, place_id="ChIJold",
+        resolved_from="plus_code", has_real_id=True,
+    )]
+    trip = make_trip(stops)
+
+    report = resolve_locations(trip, live=True, client=None, budget=RequestBudget())
+
+    assert stops[0].lat != 1.0
+    assert stops[0].resolved_from == "plus_code"
+    assert any("disagreed" in w for w in report.warnings)
