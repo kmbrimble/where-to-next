@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -95,12 +96,18 @@ class ShortLinkResolver:
     caches per-process so the same short link is only followed once. Failures
     (dead link, timeout) return None rather than raising — a dead short link is a
     warning for the caller to raise, not a crash here.
+
+    A small delay before each follow, plus one retry with backoff on failure,
+    since a batch of rapid-fire redirect follows can trip transient rate-limiting
+    (observed: 27/27 failures in one run, 0/33 failures when re-run moments later
+    at a slower pace) rather than any real dead link or code bug.
     """
 
-    def __init__(self, follow: Callable[[str], str | None] | None = None):
+    def __init__(self, follow: Callable[[str], str | None] | None = None, delay: float = 0.2):
         self._follow = follow or self._http_follow
         self._cache: dict[str, str | None] = {}
         self._call_count = 0
+        self._delay = delay
 
     @property
     def call_count(self) -> int:
@@ -110,12 +117,21 @@ class ShortLinkResolver:
         if short_url in self._cache:
             return self._cache[short_url]
         self._call_count += 1
-        try:
-            resolved = self._follow(short_url)
-        except Exception:
-            resolved = None
+
+        time.sleep(self._delay)
+        resolved = self._try_follow(short_url)
+        if resolved is None:
+            time.sleep(self._delay * 3)  # backoff before the one retry
+            resolved = self._try_follow(short_url)
+
         self._cache[short_url] = resolved
         return resolved
+
+    def _try_follow(self, short_url: str) -> str | None:
+        try:
+            return self._follow(short_url)
+        except Exception:
+            return None
 
     @staticmethod
     def _http_follow(short_url: str) -> str | None:
